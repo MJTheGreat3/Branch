@@ -18,6 +18,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var totals = Store.FileTotals()
     @Published private(set) var jobCounts = Store.JobCounts()
     @Published private(set) var quota: DriveQuota?
+    @Published private(set) var globalPatterns: [String] = ExclusionRules.defaultPatterns
     @Published private(set) var isSignedIn = false
     @Published private(set) var isOnline = true
     @Published var clientID: String = ""
@@ -102,6 +103,7 @@ final class AppModel: ObservableObject {
             nodes = tree.roots.map(node)
             totals = try store.fileTotals()
             jobCounts = try store.jobCounts()
+            globalPatterns = try store.exclusionPatterns()
             if let s = selection, tree.folders[s] == nil { selection = nil }
         } catch {
             errorMessage = error.localizedDescription
@@ -156,6 +158,15 @@ final class AppModel: ObservableObject {
 
     func setAvailability(_ id: Int64, _ mode: AvailabilityMode?) {
         perform { try library.setAvailability(id: id, mode) }
+    }
+
+    func setExcludePatterns(_ id: Int64, _ text: String) {
+        perform { try library.setExcludePatterns(id: id, ExclusionRules.parse(text)) }
+    }
+
+    /// nil restores the built-in defaults.
+    func setGlobalPatterns(_ text: String?) {
+        perform { try store.setExclusionPatterns(text.map(ExclusionRules.parse)) }
     }
 
     func setPaused(_ id: Int64, _ paused: Bool) {

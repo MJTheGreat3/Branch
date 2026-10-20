@@ -6,6 +6,7 @@ struct FolderDetailView: View {
     @EnvironmentObject var model: AppModel
     let folder: ManagedFolder
     @State private var confirmingRemove = false
+    @State private var patternsText = ""
     @State private var choosingSubfolder: SubfolderAction?
 
     enum SubfolderAction: Identifiable {
@@ -90,6 +91,28 @@ struct FolderDetailView: View {
                 }
             }
 
+            if !policy.isExcluded {
+                Section {
+                    TextField("Extra patterns", text: $patternsText, prompt: Text("e.g. *.raw, cache, exports/*"))
+                        .font(.body.monospaced())
+                        .onSubmit { model.setExcludePatterns(folder.id, patternsText) }
+                    if ExclusionRules.parse(patternsText) != folder.excludePatterns {
+                        Button("Save Patterns") { model.setExcludePatterns(folder.id, patternsText) }
+                    }
+                    let inherited = model.globalPatterns + (folder.parentID.map { model.tree.excludePatterns(for: $0) } ?? [])
+                    if !inherited.isEmpty {
+                        Text("Also skipped: \(inherited.joined(separator: ", "))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                } header: {
+                    Text("Skipped files")
+                } footer: {
+                    Text("Comma-separated patterns for this folder and its subfolders, added to the global list in Account. Files already in OneDrive are kept.")
+                }
+            }
+
             let jobs = model.jobs(for: folder.id)
             if !jobs.isEmpty {
                 Section("Pending uploads") {
@@ -124,6 +147,7 @@ struct FolderDetailView: View {
         }
         .formStyle(.grouped)
         .navigationTitle(folder.name)
+        .onAppear { patternsText = folder.excludePatterns.joined(separator: ", ") }
         .confirmationDialog(
             "Stop managing “\(folder.name)”?",
             isPresented: $confirmingRemove

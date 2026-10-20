@@ -9,6 +9,7 @@ struct AccountView: View {
     @State private var signIn: SignInState = .idle
     @State private var signInTask: Task<Void, Never>?
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var patternsText = ""
 
     enum SignInState: Equatable {
         case idle
@@ -67,6 +68,24 @@ struct AccountView: View {
             }
 
             Section {
+                TextEditor(text: $patternsText)
+                    .font(.body.monospaced())
+                    .frame(minHeight: 120)
+                HStack {
+                    Button("Save") { model.setGlobalPatterns(patternsText) }
+                        .disabled(ExclusionRules.parse(patternsText) == model.globalPatterns)
+                    Button("Restore Defaults") {
+                        model.setGlobalPatterns(nil)
+                        patternsText = model.globalPatterns.joined(separator: "\n")
+                    }
+                }
+            } header: {
+                Text("Skipped files")
+            } footer: {
+                Text("One pattern per line, applied to every folder. Use * and ? as wildcards. A pattern without / matches any file or folder name (*.tmp, node_modules); with / it matches a path inside the managed folder (Projects/*/build). Takes effect at the next backup; files already in OneDrive are kept.")
+            }
+
+            Section {
                 Toggle("Open Branch at login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, on in setLaunchAtLogin(on) }
             } header: {
@@ -82,6 +101,7 @@ struct AccountView: View {
                 Button("Done") { dismiss() }
             }
         }
+        .onAppear { patternsText = model.globalPatterns.joined(separator: "\n") }
         .onDisappear { signInTask?.cancel() }
     }
 

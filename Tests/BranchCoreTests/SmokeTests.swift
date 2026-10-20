@@ -2,7 +2,7 @@ import XCTest
 @testable import BranchCore
 
 final class SmokeTests: XCTestCase {
-    func testVersion() {
-        XCTAssertFalse(BranchCore.version.isEmpty)
+    func testIntervalSeconds() {
+        XCTAssertEqual(BackupInterval.hourly.seconds, 3600)
     }
 }

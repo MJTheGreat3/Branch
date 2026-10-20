@@ -179,6 +179,13 @@ public final class Store: @unchecked Sendable {
         public var bytes: Int64
         public var uploadedCount: Int
         public var uploadedBytes: Int64
+
+        public init(count: Int = 0, bytes: Int64 = 0, uploadedCount: Int = 0, uploadedBytes: Int64 = 0) {
+            self.count = count
+            self.bytes = bytes
+            self.uploadedCount = uploadedCount
+            self.uploadedBytes = uploadedBytes
+        }
     }
 
     public func fileTotals(rootID: Int64? = nil) throws -> FileTotals {

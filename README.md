@@ -8,7 +8,8 @@ See [docs/cloud_folder_manager_app_brief.md](docs/cloud_folder_manager_app_brief
 
 Phase 1 (scheduled backup MVP) in progress:
 
-- Add/remove folders, tree with inherited settings and child overrides, exclusions.
+- Add/remove folders, tree with inherited settings and child overrides, excluded subfolders.
+- Editable skip patterns: a global list (Account) plus per-folder patterns inherited by subfolders. Name globs (`*.tmp`, `node_modules`) or relative-path globs (`Projects/*/build`).
 - Per-folder schedules (15 min → weekly), pause/resume, back up now.
 - Change detection by size/mtime, then SHA-256, so unchanged files are never re-uploaded.
 - Persistent upload queue in SQLite; resumable Graph upload sessions for files over 4 MB.

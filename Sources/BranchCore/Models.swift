@@ -89,6 +89,8 @@ public struct ManagedFolder: Identifiable, Hashable, Sendable {
     public var availabilityOverride: AvailabilityMode?
     public var isPaused: Bool
     public var isExcluded: Bool
+    /// Extra exclusion patterns for this subtree, added to the global list and any ancestors'.
+    public var excludePatterns: [String]
     public var lastSuccess: Date?
     public var nextRun: Date?
     public var status: BackupStatus
@@ -104,6 +106,7 @@ public struct ManagedFolder: Identifiable, Hashable, Sendable {
         availabilityOverride: AvailabilityMode? = nil,
         isPaused: Bool = false,
         isExcluded: Bool = false,
+        excludePatterns: [String] = [],
         lastSuccess: Date? = nil,
         nextRun: Date? = nil,
         status: BackupStatus = .idle,
@@ -118,6 +121,7 @@ public struct ManagedFolder: Identifiable, Hashable, Sendable {
         self.availabilityOverride = availabilityOverride
         self.isPaused = isPaused
         self.isExcluded = isExcluded
+        self.excludePatterns = excludePatterns
         self.lastSuccess = lastSuccess
         self.nextRun = nextRun
         self.status = status

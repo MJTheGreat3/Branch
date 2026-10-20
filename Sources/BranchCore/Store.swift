@@ -72,12 +72,18 @@ public final class Store: @unchecked Sendable {
                 try db.setUserVersion(1)
             }
         }
+        if db.userVersion < 2 {
+            try db.transaction {
+                try db.execute("ALTER TABLE folders ADD COLUMN exclude_patterns TEXT")
+                try db.setUserVersion(2)
+            }
+        }
     }
 
     // MARK: Folders
 
     private static let folderColumns =
-        "id, parent_id, path, bookmark, remote_name, interval, availability, paused, excluded, last_success, next_run, status, last_error"
+        "id, parent_id, path, bookmark, remote_name, interval, availability, paused, excluded, last_success, next_run, status, last_error, exclude_patterns"
 
     private static func folder(_ r: Row) -> ManagedFolder {
         ManagedFolder(
@@ -90,6 +96,7 @@ public final class Store: @unchecked Sendable {
             availabilityOverride: r.textOrNil(6).flatMap(AvailabilityMode.init(rawValue:)),
             isPaused: r.bool(7),
             isExcluded: r.bool(8),
+            excludePatterns: r.textOrNil(13).map(Store.decodePatterns) ?? [],
             lastSuccess: r.dateOrNil(9),
             nextRun: r.dateOrNil(10),
             status: BackupStatus(rawValue: r.text(11)) ?? .idle,
@@ -113,12 +120,12 @@ public final class Store: @unchecked Sendable {
     public func insert(_ f: ManagedFolder) throws -> ManagedFolder {
         try db.run("""
         INSERT INTO folders (parent_id, path, bookmark, remote_name, interval, availability, paused, excluded,
-                             last_success, next_run, status, last_error)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             last_success, next_run, status, last_error, exclude_patterns)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [
             f.parentID, f.path, f.bookmark, f.remoteName, f.intervalOverride?.rawValue,
             f.availabilityOverride?.rawValue, f.isPaused, f.isExcluded, f.lastSuccess, f.nextRun,
-            f.status.rawValue, f.lastError,
+            f.status.rawValue, f.lastError, Store.encodePatterns(f.excludePatterns),
         ])
         var copy = f
         copy.id = db.lastInsertID
@@ -128,12 +135,12 @@ public final class Store: @unchecked Sendable {
     public func update(_ f: ManagedFolder) throws {
         try db.run("""
         UPDATE folders SET parent_id = ?, path = ?, bookmark = ?, remote_name = ?, interval = ?, availability = ?,
-            paused = ?, excluded = ?, last_success = ?, next_run = ?, status = ?, last_error = ?
+            paused = ?, excluded = ?, last_success = ?, next_run = ?, status = ?, last_error = ?, exclude_patterns = ?
         WHERE id = ?
         """, [
             f.parentID, f.path, f.bookmark, f.remoteName, f.intervalOverride?.rawValue,
             f.availabilityOverride?.rawValue, f.isPaused, f.isExcluded, f.lastSuccess, f.nextRun,
-            f.status.rawValue, f.lastError, f.id,
+            f.status.rawValue, f.lastError, Store.encodePatterns(f.excludePatterns), f.id,
         ])
     }
 
@@ -294,6 +301,36 @@ public final class Store: @unchecked Sendable {
     }
 
     // MARK: Settings
+
+    static func encodePatterns(_ p: [String]) -> String? {
+        p.isEmpty ? nil : p.joined(separator: "\n")
+    }
+
+    static func decodePatterns(_ s: String) -> [String] {
+        s.split(separator: "\n").map(String.init)
+    }
+
+    private static let exclusionsKey = "exclusions.patterns"
+
+    /// Global exclusion patterns; the built-in defaults until the user edits them.
+    public func exclusionPatterns() throws -> [String] {
+        try setting(Self.exclusionsKey).map(Store.decodePatterns) ?? ExclusionRules.defaultPatterns
+    }
+
+    /// Saves global patterns. nil restores the defaults.
+    public func setExclusionPatterns(_ patterns: [String]?) throws {
+        // Stored even when empty so "no exclusions" differs from "defaults".
+        try setSetting(Self.exclusionsKey, patterns.map { ExclusionRules.clean($0).joined(separator: "\n") })
+    }
+
+    /// Drops never-uploaded records and unfinished jobs for files no longer in scope
+    /// (deleted, or now excluded). Records of files already in the cloud are kept.
+    public func forgetPending(rootID: Int64, relativePaths: [String]) throws {
+        for rel in relativePaths {
+            try db.run("DELETE FROM files WHERE root_id = ? AND rel_path = ? AND uploaded_at IS NULL", [rootID, rel])
+            try db.run("DELETE FROM jobs WHERE root_id = ? AND rel_path = ? AND state != 'uploading'", [rootID, rel])
+        }
+    }
 
     public func setting(_ key: String) throws -> String? {
         try db.first("SELECT value FROM settings WHERE key = ?", [key]) { $0.textOrNil(0) } ?? nil

@@ -172,6 +172,35 @@ final class BackupEngineTests: XCTestCase {
         XCTAssertEqual(try store.jobs().map(\.relativePath), ["y"])
     }
 
+    func testPatternsExcludeFilesAndDropPendingJobs() async throws {
+        let docs = try library.add(path: path("Docs"))
+        try write("Docs/keep.txt", Data("k".utf8))
+        try write("Docs/noise.log", Data("n".utf8))
+        try write("Docs/big/frame.raw", Data("r".utf8))
+        try await engine.scan(folderID: docs.id)
+        XCTAssertEqual(try store.jobs().count, 3)
+
+        // Global pattern plus a folder-level pattern; already-queued matches are dropped.
+        try store.setExclusionPatterns(["*.log"])
+        try library.setExcludePatterns(id: docs.id, ["big/*.raw"])
+        try await engine.scan(folderID: docs.id)
+        XCTAssertEqual(try store.jobs().map(\.relativePath), ["keep.txt"])
+        XCTAssertEqual(try store.fileTotals(rootID: docs.id).count, 1)
+
+        await engine.processQueue()
+        XCTAssertEqual(drive.files.keys.sorted(), ["Docs/keep.txt"])
+    }
+
+    func testExcludingUploadedFileKeepsCloudRecord() async throws {
+        let docs = try library.add(path: path("Docs"))
+        try write("Docs/a.log", Data("a".utf8))
+        await engine.tick()
+        try store.setExclusionPatterns(["*.log"])
+        try await engine.scan(folderID: docs.id)
+        XCTAssertNotNil(try store.files(rootID: docs.id)["a.log"]?.uploadedAt)
+        XCTAssertNotNil(drive.files["Docs/a.log"])
+    }
+
     func testRetryThenSuccess() async throws {
         let docs = try library.add(path: path("Docs"))
         try write("Docs/a.txt", Data("a".utf8))

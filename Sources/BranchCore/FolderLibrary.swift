@@ -91,6 +91,10 @@ public struct FolderLibrary: Sendable {
         try modify(id) { $0.availabilityOverride = mode }
     }
 
+    public func setExcludePatterns(id: Int64, _ patterns: [String]) throws {
+        try modify(id) { $0.excludePatterns = ExclusionRules.clean(patterns) }
+    }
+
     public func setPaused(id: Int64, _ paused: Bool) throws {
         try modify(id) {
             $0.isPaused = paused

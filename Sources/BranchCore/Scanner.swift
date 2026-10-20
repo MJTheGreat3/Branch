@@ -1,8 +1,11 @@
 import CryptoKit
 import Foundation
 
-/// Glob-style name patterns for files and folders the scanner ignores.
-public struct ExclusionRules: Sendable {
+/// Glob patterns for files and folders the scanner ignores.
+///
+/// A pattern without "/" matches any file or folder name (`*.tmp`, `node_modules`).
+/// A pattern with "/" matches the path relative to the managed root (`Projects/*/build`).
+public struct ExclusionRules: Sendable, Equatable {
     public static let defaultPatterns = [
         ".DS_Store", "._*", ".Trash", ".Spotlight-V100", ".fseventsd",
         "*.tmp", "*.swp", "~$*", ".git", "node_modules", ".build", "DerivedData",
@@ -11,11 +14,35 @@ public struct ExclusionRules: Sendable {
     public var patterns: [String]
 
     public init(patterns: [String] = ExclusionRules.defaultPatterns) {
-        self.patterns = patterns
+        self.patterns = Self.clean(patterns)
     }
 
-    public func excludes(name: String) -> Bool {
-        patterns.contains { fnmatch($0, name, 0) == 0 }
+    public func excludes(name: String, relativePath: String? = nil) -> Bool {
+        patterns.contains { p in
+            if p.contains("/") {
+                guard let rel = relativePath else { return false }
+                let anchored = p.hasPrefix("/") ? String(p.dropFirst()) : p
+                return fnmatch(anchored, rel, FNM_PATHNAME) == 0
+            }
+            return fnmatch(p, name, 0) == 0
+        }
+    }
+
+    public func adding(_ more: [String]) -> ExclusionRules {
+        ExclusionRules(patterns: patterns + more)
+    }
+
+    /// Trims, drops blanks and comments, de-duplicates while keeping order.
+    public static func clean(_ patterns: [String]) -> [String] {
+        var seen = Set<String>()
+        return patterns
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") && seen.insert($0).inserted }
+    }
+
+    /// Parses one pattern per line or comma-separated.
+    public static func parse(_ text: String) -> [String] {
+        clean(text.components(separatedBy: CharacterSet(charactersIn: ",\n")))
     }
 }
 
@@ -59,12 +86,12 @@ public enum Scanner {
         for case let item as URL in walker {
             let path = item.standardizedFileURL.path
             let values = try? item.resourceValues(forKeys: Set(keys))
-            if rules.excludes(name: item.lastPathComponent) || skipping.contains(path) {
+            let rel = FolderTree.relative(path, to: rootPath)
+            if skipping.contains(path) || rules.excludes(name: item.lastPathComponent, relativePath: rel) {
                 if values?.isDirectory == true { walker.skipDescendants() }
                 continue
             }
-            guard values?.isSymbolicLink != true, values?.isRegularFile == true,
-                  let rel = FolderTree.relative(path, to: rootPath) else { continue }
+            guard values?.isSymbolicLink != true, values?.isRegularFile == true, let rel else { continue }
             out.append(ScannedFile(
                 relativePath: rel,
                 size: Int64(values?.fileSize ?? 0),

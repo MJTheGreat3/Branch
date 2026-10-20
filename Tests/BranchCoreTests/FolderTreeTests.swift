@@ -50,4 +50,12 @@ final class FolderTreeTests: XCTestCase {
         XCTAssertEqual(tree.containing("/u/docs/other")?.id, 1)
         XCTAssertNil(tree.containing("/elsewhere"))
     }
+
+    func testExcludePatternsInherit() {
+        var r = root; r.excludePatterns = ["*.log"]
+        var d = data; d.excludePatterns = ["*.raw"]
+        let t = FolderTree([r, d, raw])
+        XCTAssertEqual(t.excludePatterns(for: 3), ["*.log", "*.raw"])
+        XCTAssertEqual(t.excludePatterns(for: 1), ["*.log"])
+    }
 }

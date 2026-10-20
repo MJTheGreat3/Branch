@@ -76,4 +76,50 @@ final class StoreTests: XCTestCase {
         try store.setSetting("k", nil)
         XCTAssertNil(try store.setting("k"))
     }
+
+    func testExclusionPatternsSetting() throws {
+        XCTAssertEqual(try store.exclusionPatterns(), ExclusionRules.defaultPatterns)
+        try store.setExclusionPatterns(["*.log", " ", "*.log"])
+        XCTAssertEqual(try store.exclusionPatterns(), ["*.log"])
+        try store.setExclusionPatterns([])
+        XCTAssertEqual(try store.exclusionPatterns(), [])
+        try store.setExclusionPatterns(nil)
+        XCTAssertEqual(try store.exclusionPatterns(), ExclusionRules.defaultPatterns)
+    }
+
+    func testFolderPatternsPersist() throws {
+        let f = try store.insert(ManagedFolder(path: "/tmp/p", excludePatterns: ["*.raw", "cache"]))
+        XCTAssertEqual(try store.folder(id: f.id)?.excludePatterns, ["*.raw", "cache"])
+        var g = f
+        g.excludePatterns = []
+        try store.update(g)
+        XCTAssertEqual(try store.folder(id: f.id)?.excludePatterns, [])
+    }
+
+    func testMigratesVersion1Database() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("v1-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+        do {
+            let db = try Database(path: url.path)
+            try db.execute("""
+            CREATE TABLE folders (id INTEGER PRIMARY KEY AUTOINCREMENT, parent_id INTEGER, path TEXT NOT NULL UNIQUE,
+                bookmark BLOB, remote_name TEXT, interval TEXT, availability TEXT, paused INTEGER NOT NULL DEFAULT 0,
+                excluded INTEGER NOT NULL DEFAULT 0, last_success REAL, next_run REAL,
+                status TEXT NOT NULL DEFAULT 'idle', last_error TEXT);
+            CREATE TABLE files (root_id INTEGER, rel_path TEXT, size INTEGER, modified REAL, sha256 TEXT,
+                remote_item_id TEXT, uploaded_at REAL, PRIMARY KEY (root_id, rel_path));
+            CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, folder_id INTEGER, root_id INTEGER,
+                rel_path TEXT, size INTEGER, modified REAL, sha256 TEXT, state TEXT, attempts INTEGER DEFAULT 0,
+                not_before REAL, last_error TEXT, session_url TEXT, bytes_uploaded INTEGER DEFAULT 0,
+                UNIQUE (root_id, rel_path));
+            CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+            INSERT INTO folders (path, remote_name) VALUES ('/tmp/old', 'old');
+            PRAGMA user_version = 1;
+            """)
+        }
+        let migrated = try Store(db: Database(path: url.path))
+        XCTAssertEqual(migrated.db.userVersion, 2)
+        let f = try XCTUnwrap(migrated.folder(path: "/tmp/old"))
+        XCTAssertEqual(f.excludePatterns, [])
+    }
 }

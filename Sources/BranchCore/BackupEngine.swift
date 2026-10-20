@@ -10,7 +10,6 @@ public actor BackupEngine {
         public var maxAttempts = 8
         public var baseBackoff: TimeInterval = 30
         public var maxBackoff: TimeInterval = 3600
-        public var rules = ExclusionRules()
         public init() {}
     }
 
@@ -75,8 +74,10 @@ public actor BackupEngine {
         guard !policy.isExcluded else { return 0 }
 
         let skipped = tree.skippedPaths(under: folderID)
+        let rules = ExclusionRules(patterns: try store.exclusionPatterns())
+            .adding(tree.excludePatterns(for: folderID))
         let scanned = try Scanner.enumerate(
-            folderPath: folder.path, rootPath: root.path, skipping: skipped, rules: options.rules
+            folderPath: folder.path, rootPath: root.path, skipping: skipped, rules: rules
         )
 
         // Only compare with records inside this folder's own scope.
@@ -96,6 +97,7 @@ public actor BackupEngine {
         let at = now()
         var queued = 0
         try store.db.transaction {
+            try store.forgetPending(rootID: root.id, relativePaths: result.missing)
             for (file, hash) in result.touched {
                 var rec = known[file.relativePath]!
                 rec.size = file.size

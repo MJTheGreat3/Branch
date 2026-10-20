@@ -78,6 +78,15 @@ final class ScannerTests: XCTestCase {
         )
     }
 
+    func testPathPatternsAndParse() {
+        let r = ExclusionRules(patterns: ["Projects/*/build", "/cache"])
+        XCTAssertTrue(r.excludes(name: "build", relativePath: "Projects/app/build"))
+        XCTAssertFalse(r.excludes(name: "build", relativePath: "Projects/app/src/build"))
+        XCTAssertTrue(r.excludes(name: "cache", relativePath: "cache"))
+        XCTAssertFalse(r.excludes(name: "cache", relativePath: "sub/cache"))
+        XCTAssertEqual(ExclusionRules.parse("*.log, build\n# note\n\n*.log"), ["*.log", "build"])
+    }
+
     func testExclusionRules() {
         let r = ExclusionRules()
         XCTAssertTrue(r.excludes(name: "foo.tmp"))

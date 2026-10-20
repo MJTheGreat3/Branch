@@ -75,6 +75,11 @@ public struct FolderTree: Sendable {
         )
     }
 
+    /// Extra exclusion patterns that apply to a folder: its own plus all ancestors', root first.
+    public func excludePatterns(for id: Int64) -> [String] {
+        lineage(of: id).reversed().flatMap(\.excludePatterns)
+    }
+
     /// Folders whose schedule is due at `now`.
     public func dueFolders(now: Date) -> [ManagedFolder] {
         folders.values

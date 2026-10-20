@@ -60,6 +60,8 @@ public struct AuthConfig: Sendable, Equatable {
 /// Supplies a valid Graph access token, refreshing as needed.
 public protocol AccessTokenProvider: Sendable {
     func accessToken() async throws -> String
+    /// Called after the server rejects a token; should return a fresh one.
+    func refreshedAccessToken() async throws -> String
 }
 
 /// Device-code sign-in plus token refresh, with tokens persisted in the Keychain.
@@ -158,6 +160,10 @@ public actor AuthManager: AccessTokenProvider {
         guard let current = tokens else { throw AuthError.notSignedIn }
         if !current.isExpiring(at: now()) { return current.accessToken }
         return try await refresh().accessToken
+    }
+
+    public func refreshedAccessToken() async throws -> String {
+        try await refresh().accessToken
     }
 
     /// Forces a refresh, e.g. after a 401.

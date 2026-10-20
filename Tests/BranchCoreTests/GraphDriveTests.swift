@@ -19,6 +19,7 @@ final class StubHTTP: HTTPClient, @unchecked Sendable {
 
 struct FixedToken: AccessTokenProvider {
     func accessToken() async throws -> String { "tok" }
+    func refreshedAccessToken() async throws -> String { "fresh" }
 }
 
 final class GraphDriveTests: XCTestCase {
@@ -70,6 +71,14 @@ final class GraphDriveTests: XCTestCase {
         } catch {
             XCTFail("\(error)")
         }
+    }
+
+    func testRefreshesOn401() async throws {
+        let http = StubHTTP()
+        http.responses = [(401, "{}", [:]), (201, #"{"id":"A","size":0}"#, [:])]
+        let drive = GraphDrive(tokens: FixedToken(), http: http)
+        _ = try await drive.upload(data: Data(), to: "x")
+        XCTAssertEqual(http.requests.map { $0.value(forHTTPHeaderField: "Authorization") }, ["Bearer tok", "Bearer fresh"])
     }
 
     func testQuotaExceededNotRetryable() {

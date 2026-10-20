@@ -93,9 +93,13 @@ public struct GraphDrive: CloudDrive {
         URL(string: "\(base.absoluteString)/special/approot:/\(Self.encode(remotePath)):/\(suffix)")!
     }
 
+    /// Sends with a bearer token, refreshing once if the server says it's no longer valid.
     private func authorized(_ req: URLRequest) async throws -> (Data, HTTPURLResponse) {
         var r = req
         r.setValue("Bearer \(try await tokens.accessToken())", forHTTPHeaderField: "Authorization")
+        let (body, resp) = try await send(r)
+        guard resp.statusCode == 401 else { return (body, resp) }
+        r.setValue("Bearer \(try await tokens.refreshedAccessToken())", forHTTPHeaderField: "Authorization")
         return try await send(r)
     }
 

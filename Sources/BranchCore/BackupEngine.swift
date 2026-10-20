@@ -243,6 +243,7 @@ public actor BackupEngine {
                 offset = next
                 job.bytesUploaded = next
                 try store.update(job)
+                notify()
             }
         }
     }
@@ -256,7 +257,8 @@ public actor BackupEngine {
             job.sessionURL = nil
             job.bytesUploaded = 0
         }
-        let retryable = cloud?.isRetryable ?? (error is AuthError ? false : true)
+        // Auth problems (signed out, refresh failed) keep the job queued until the user signs in again.
+        let retryable = cloud?.isRetryable ?? true
         if retryable && job.attempts < options.maxAttempts {
             job.state = .queued
             job.notBefore = now().addingTimeInterval(cloud?.retryAfter ?? backoff(attempt: job.attempts))

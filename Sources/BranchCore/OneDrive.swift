@@ -4,6 +4,14 @@ import Foundation
 public struct RemoteItem: Equatable, Sendable {
     public var id: String
     public var size: Int64
+    /// Base64 QuickXorHash reported by OneDrive, when present.
+    public var quickXorHash: String?
+
+    public init(id: String, size: Int64, quickXorHash: String? = nil) {
+        self.id = id
+        self.size = size
+        self.quickXorHash = quickXorHash
+    }
 }
 
 public struct DriveQuota: Equatable, Sendable {
@@ -182,7 +190,12 @@ public struct GraphDrive: CloudDrive {
               let id = obj["id"] as? String else {
             throw CloudError(kind: .verification, message: "Upload response did not include an item id")
         }
-        return RemoteItem(id: id, size: (obj["size"] as? NSNumber)?.int64Value ?? -1)
+        let hashes = (obj["file"] as? [String: Any])?["hashes"] as? [String: Any]
+        return RemoteItem(
+            id: id,
+            size: (obj["size"] as? NSNumber)?.int64Value ?? -1,
+            quickXorHash: hashes?["quickXorHash"] as? String
+        )
     }
 
     static func check(_ resp: HTTPURLResponse, _ body: Data) throws {

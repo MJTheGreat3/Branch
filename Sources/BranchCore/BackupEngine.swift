@@ -190,10 +190,8 @@ public actor BackupEngine {
             }
 
             let remotePath = remoteName + "/" + job.relativePath
-            let item = try await upload(&job, localPath: localPath, remotePath: remotePath, drive: drive)
-            guard item.size < 0 || item.size == job.size else {
-                throw CloudError(kind: .verification, message: "Uploaded size \(item.size) does not match local size \(job.size)")
-            }
+            let (item, localHash) = try await upload(&job, localPath: localPath, remotePath: remotePath, drive: drive)
+            try Self.verify(item, size: job.size, quickXorHash: localHash)
 
             try store.db.transaction {
                 try store.upsert(FileRecord(
@@ -209,11 +207,27 @@ public actor BackupEngine {
         notify()
     }
 
-    private func upload(_ job: inout UploadJob, localPath: String, remotePath: String, drive: CloudDrive) async throws -> RemoteItem {
+    /// Confirms the cloud copy matches what was read locally. Missing remote values can't be checked and are allowed.
+    static func verify(_ item: RemoteItem, size: Int64, quickXorHash: String) throws {
+        guard item.size < 0 || item.size == size else {
+            throw CloudError(kind: .verification, message: "Uploaded size \(item.size) does not match local size \(size)")
+        }
+        if let remote = item.quickXorHash, remote != quickXorHash {
+            throw CloudError(kind: .verification, message: "Uploaded content does not match the local file (hash mismatch)")
+        }
+    }
+
+    /// Uploads the file and returns the remote item plus the local QuickXorHash to verify against.
+    private func upload(_ job: inout UploadJob, localPath: String, remotePath: String, drive: CloudDrive) async throws -> (RemoteItem, String) {
         if job.size <= GraphDrive.simpleUploadLimit {
             let data = try Data(contentsOf: URL(fileURLWithPath: localPath))
-            return try await drive.upload(data: data, to: remotePath)
+            guard Int64(data.count) == job.size else {
+                throw CloudError(kind: .verification, message: "File changed while reading; will retry")
+            }
+            return (try await drive.upload(data: data, to: remotePath), QuickXorHash.hash(data))
         }
+        // Hash before sending: if the file changes mid-upload the remote hash won't match and the job retries.
+        let localHash = try QuickXorHash.hash(path: localPath)
 
         var offset: Int64 = 0
         var session: URL
@@ -238,7 +252,7 @@ public actor BackupEngine {
             }
             switch try await drive.uploadChunk(session: session, data: chunk, offset: offset, total: job.size) {
             case .completed(let item):
-                return item
+                return (item, localHash)
             case .next(let next):
                 offset = next
                 job.bytesUploaded = next

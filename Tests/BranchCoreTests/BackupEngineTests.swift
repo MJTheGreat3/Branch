@@ -11,6 +11,7 @@ final class FakeDrive: CloudDrive, @unchecked Sendable {
     private var _calls = 0
     private var _sessionsCreated = 0
     var reportSize: Int64?
+    var corruptHash = false
     var failAtCall: Int?
     var sessionsCreated: Int { lock.withLock { _sessionsCreated } }
 
@@ -33,7 +34,10 @@ final class FakeDrive: CloudDrive, @unchecked Sendable {
         return lock.withLock {
             _uploadCalls += 1
             _files[remotePath] = data
-            return RemoteItem(id: "id-\(remotePath)", size: reportSize ?? Int64(data.count))
+            return RemoteItem(
+                id: "id-\(remotePath)", size: reportSize ?? Int64(data.count),
+                quickXorHash: corruptHash ? "bogus" : QuickXorHash.hash(data)
+            )
         }
     }
 
@@ -57,7 +61,10 @@ final class FakeDrive: CloudDrive, @unchecked Sendable {
             if Int64(s.data.count) == total {
                 _uploadCalls += 1
                 _files[s.path] = s.data
-                return .completed(RemoteItem(id: "id-\(s.path)", size: total))
+                return .completed(RemoteItem(
+                    id: "id-\(s.path)", size: total,
+                    quickXorHash: corruptHash ? "bogus" : QuickXorHash.hash(s.data)
+                ))
             }
             return .next(Int64(s.data.count))
         }
@@ -207,6 +214,22 @@ final class BackupEngineTests: XCTestCase {
         await engine.tick()
         XCTAssertNotEqual(try store.folder(id: docs.id)?.status, .backedUp)
         XCTAssertNil(try store.files(rootID: docs.id)["a.txt"]?.uploadedAt)
+    }
+
+    func testHashMismatchNotReportedAsSuccess() async throws {
+        let docs = try library.add(path: path("Docs"))
+        try write("Docs/a.txt", Data("abc".utf8))
+        drive.corruptHash = true
+        await engine.tick()
+        let job = try XCTUnwrap(store.jobs().first)
+        XCTAssertEqual(job.state, .queued)
+        XCTAssertEqual(job.lastError, "Uploaded content does not match the local file (hash mismatch)")
+        XCTAssertNil(try store.files(rootID: docs.id)["a.txt"]?.uploadedAt)
+
+        drive.corruptHash = false
+        clock.advance(60)
+        await engine.processQueue()
+        XCTAssertEqual(try store.folder(id: docs.id)?.status, .backedUp)
     }
 
     func testLargeFileResumesSession() async throws {

@@ -44,7 +44,7 @@ final class GraphDriveTests: XCTestCase {
         http.responses = [
             (200, #"{"uploadUrl":"https://up.example/s1"}"#, [:]),
             (202, #"{"nextExpectedRanges":["4-"]}"#, [:]),
-            (201, #"{"id":"X","size":8}"#, [:]),
+            (201, #"{"id":"X","size":8,"file":{"hashes":{"quickXorHash":"QX"}}}"#, [:]),
         ]
         let drive = GraphDrive(tokens: FixedToken(), http: http)
         let session = try await drive.createUploadSession(remotePath: "a/b.bin")
@@ -52,7 +52,7 @@ final class GraphDriveTests: XCTestCase {
         let r1 = try await drive.uploadChunk(session: session, data: Data(count: 4), offset: 0, total: 8)
         XCTAssertEqual(r1, .next(4))
         let r2 = try await drive.uploadChunk(session: session, data: Data(count: 4), offset: 4, total: 8)
-        XCTAssertEqual(r2, .completed(RemoteItem(id: "X", size: 8)))
+        XCTAssertEqual(r2, .completed(RemoteItem(id: "X", size: 8, quickXorHash: "QX")))
         XCTAssertNil(http.requests[1].value(forHTTPHeaderField: "Authorization"))
         XCTAssertEqual(http.requests[2].value(forHTTPHeaderField: "Content-Range"), "bytes 4-7/8")
     }

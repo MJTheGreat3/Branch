@@ -13,7 +13,7 @@ Phase 1 (scheduled backup MVP) in progress:
 - Change detection by size/mtime, then SHA-256, so unchanged files are never re-uploaded.
 - Persistent upload queue in SQLite; resumable Graph upload sessions for files over 4 MB.
 - Bounded retries with exponential backoff; honours `Retry-After`.
-- A file only counts as backed up after Graph returns the item and its size matches.
+- A file only counts as backed up after Graph returns the item and both its size and QuickXorHash match the local file.
 - Upload-only: local deletions are never propagated, local files are never modified.
 - Menu-bar status, keeps running with the window closed, optional login item.
 

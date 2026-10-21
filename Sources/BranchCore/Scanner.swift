@@ -65,6 +65,17 @@ public struct ScanResult: Sendable {
     public var totalBytes: Int64
 }
 
+public enum ScanError: Error, Equatable, CustomStringConvertible {
+    case folderMissing(String)
+
+    public var description: String {
+        switch self {
+        case .folderMissing(let p):
+            return "Folder not found at \(p). It may have been moved, renamed or deleted, or its drive is disconnected."
+        }
+    }
+}
+
 public enum Scanner {
     /// Lists regular files under `folderPath`, skipping excluded names and `skipping` subtrees.
     /// Returned paths are relative to `rootPath`.
@@ -74,6 +85,11 @@ public enum Scanner {
         skipping: Set<String>,
         rules: ExclusionRules
     ) throws -> [ScannedFile] {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folderPath, isDirectory: &isDir), isDir.boolValue else {
+            // Never treat an unreachable folder as empty: that would look like every file was deleted.
+            throw ScanError.folderMissing(folderPath)
+        }
         let url = URL(fileURLWithPath: folderPath, isDirectory: true)
         let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey]
         guard let walker = FileManager.default.enumerator(

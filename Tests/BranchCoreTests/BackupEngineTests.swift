@@ -201,6 +201,66 @@ final class BackupEngineTests: XCTestCase {
         XCTAssertNotNil(drive.files["Docs/a.log"])
     }
 
+    private func bookmark(_ rel: String) throws -> Data {
+        try dir.appendingPathComponent(rel).bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+    }
+
+    func testMovedFolderIsFollowedWithoutReupload() async throws {
+        let docs = try library.add(path: path("Docs"), bookmark: bookmark("Docs"))
+        let big = try library.add(path: path("Docs/big"))
+        try library.setInterval(id: big.id, .weekly)
+        try write("Docs/a.txt", Data("a".utf8))
+        try write("Docs/big/b.bin", Data("b".utf8))
+        await engine.tick()
+        XCTAssertEqual(drive.uploadCalls, 2)
+
+        try FileManager.default.moveItem(atPath: path("Docs"), toPath: path("Renamed"))
+        clock.advance(3601)
+        await engine.tick()
+
+        let moved = try XCTUnwrap(store.folder(id: docs.id))
+        XCTAssertEqual(moved.path, path("Renamed"))
+        XCTAssertEqual(moved.remoteName, "Docs", "cloud destination stays stable")
+        XCTAssertEqual(moved.status, .backedUp)
+        XCTAssertEqual(try store.folder(id: big.id)?.path, path("Renamed/big"))
+        XCTAssertEqual(try store.folder(id: big.id)?.intervalOverride, .weekly)
+        XCTAssertEqual(drive.uploadCalls, 2, "unchanged files are not uploaded again")
+
+        try write("Renamed/new.txt", Data("n".utf8))
+        try library.scheduleNow(id: docs.id)
+        await engine.tick()
+        XCTAssertNotNil(drive.files["Docs/new.txt"])
+    }
+
+    func testMissingFolderNeedsAttentionAndKeepsRecords() async throws {
+        let docs = try library.add(path: path("Docs"))
+        try write("Docs/a.txt", Data("a".utf8))
+        try write("Docs/pending.txt", Data("p".utf8))
+        try await engine.scan(folderID: docs.id)
+        try FileManager.default.moveItem(atPath: path("Docs"), toPath: path("Gone"))
+
+        clock.advance(3601)
+        await engine.tick()
+        let f = try XCTUnwrap(store.folder(id: docs.id))
+        XCTAssertEqual(f.status, .needsAttention)
+        XCTAssertTrue(f.lastError?.contains("Folder not found") == true)
+        XCTAssertEqual(try store.fileTotals(rootID: docs.id).count, 2, "records survive an unreachable folder")
+    }
+
+    func testRelocationIgnoresTrashAndCollisions() throws {
+        let docs = try library.add(path: path("Docs"), bookmark: Data([1]))
+        _ = try library.add(path: path("Photos"))
+        try FileManager.default.moveItem(atPath: path("Docs"), toPath: path("Moved"))
+
+        let toTrash = try library.relocateMovedFolders { _ in nil }
+        XCTAssertTrue(toTrash.isEmpty)
+        let collide = try library.relocateMovedFolders { _ in .init(path: self.path("Photos")) }
+        XCTAssertTrue(collide.isEmpty)
+        let ok = try library.relocateMovedFolders { _ in .init(path: self.path("Moved"), refreshed: Data([2])) }
+        XCTAssertEqual(ok, [.init(folderID: docs.id, from: path("Docs"), to: path("Moved"))])
+        XCTAssertEqual(try store.folder(id: docs.id)?.bookmark, Data([2]))
+    }
+
     func testRetryThenSuccess() async throws {
         let docs = try library.add(path: path("Docs"))
         try write("Docs/a.txt", Data("a".utf8))

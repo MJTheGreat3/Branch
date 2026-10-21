@@ -60,6 +60,88 @@ public struct FolderLibrary: Sendable {
         }
     }
 
+    /// Where a bookmark points now.
+    public struct ResolvedBookmark: Sendable {
+        public var path: String
+        /// Fresh bookmark data when the old one was stale.
+        public var refreshed: Data?
+
+        public init(path: String, refreshed: Data? = nil) {
+            self.path = path
+            self.refreshed = refreshed
+        }
+    }
+
+    public struct Relocation: Equatable, Sendable {
+        public var folderID: Int64
+        public var from: String
+        public var to: String
+    }
+
+    /// Resolves a bookmark with the system, ignoring folders that went to the Trash.
+    public static func resolveBookmark(_ data: Data) -> ResolvedBookmark? {
+        var stale = false
+        guard let url = try? URL(
+            resolvingBookmarkData: data, options: [.withoutUI, .withoutMounting], relativeTo: nil,
+            bookmarkDataIsStale: &stale
+        ) else { return nil }
+        let path = url.standardizedFileURL.path
+        if path.contains("/.Trash/") || path.hasSuffix("/.Trash") { return nil }
+        let refreshed = stale ? try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) : nil
+        return ResolvedBookmark(path: path, refreshed: refreshed)
+    }
+
+    /// Follows managed roots that were moved or renamed in Finder, rewriting their path and their
+    /// descendants' paths. File records are relative to the root and the OneDrive destination name
+    /// stays the same, so nothing is uploaded again.
+    @discardableResult
+    public func relocateMovedFolders(
+        resolve: (Data) -> ResolvedBookmark? = FolderLibrary.resolveBookmark
+    ) throws -> [Relocation] {
+        let tree = try tree()
+        var moves: [Relocation] = []
+        for root in tree.roots {
+            // Only folders missing from their recorded path need resolving.
+            guard let bookmark = root.bookmark,
+                  !FileManager.default.fileExists(atPath: root.path),
+                  let resolved = resolve(bookmark) else { continue }
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDir), isDir.boolValue else { continue }
+            if resolved.path == root.path {
+                if let fresh = resolved.refreshed {
+                    var r = root
+                    r.bookmark = fresh
+                    try store.update(r)
+                }
+                continue
+            }
+            // Don't collide with something already managed at the new location.
+            guard tree.containing(resolved.path) == nil else { continue }
+
+            try store.db.transaction {
+                var r = root
+                r.path = resolved.path
+                r.bookmark = resolved.refreshed ?? root.bookmark
+                r.status = r.lastSuccess == nil ? .idle : .backedUp
+                r.lastError = nil
+                r.nextRun = .distantPast
+                try store.update(r)
+                for d in tree.folders.values where d.id != root.id {
+                    guard let rel = FolderTree.relative(d.path, to: root.path) else { continue }
+                    var moved = d
+                    moved.path = (resolved.path as NSString).appendingPathComponent(rel)
+                    if moved.status == .needsAttention {
+                        moved.status = .idle
+                        moved.lastError = nil
+                    }
+                    try store.update(moved)
+                }
+            }
+            moves.append(Relocation(folderID: root.id, from: root.path, to: resolved.path))
+        }
+        return moves
+    }
+
     /// Marks a descendant path to be skipped by backups. Creates the node if needed.
     @discardableResult
     public func exclude(path rawPath: String, _ excluded: Bool = true) throws -> ManagedFolder {

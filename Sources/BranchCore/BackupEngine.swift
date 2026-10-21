@@ -50,10 +50,14 @@ public actor BackupEngine {
 
     /// One scheduling pass: scan every due folder, then drain the upload queue.
     public func tick() async {
+        // Follow folders the user moved or renamed before deciding what's due.
+        _ = try? FolderLibrary(store: store).relocateMovedFolders()
         if let tree = try? FolderTree(store.allFolders()) {
             for folder in tree.dueFolders(now: now()) {
                 do {
                     try scan(folderID: folder.id)
+                } catch let e as ScanError {
+                    try? store.setStatus(folderID: folder.id, .needsAttention, error: e.description)
                 } catch {
                     try? store.setStatus(folderID: folder.id, .needsAttention, error: "Scan failed: \(error.localizedDescription)")
                 }
@@ -173,6 +177,11 @@ public actor BackupEngine {
                 try store.deleteJob(id: job.id)
                 return
             }
+            var rootIsDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: root.path, isDirectory: &rootIsDir), rootIsDir.boolValue else {
+                // Whole folder unreachable (moved, unmounted): keep the job for when it's back.
+                throw ScanError.folderMissing(root.path)
+            }
             let localPath = (root.path as NSString).appendingPathComponent(job.relativePath)
             guard let attrs = try? FileManager.default.attributesOfItem(atPath: localPath) else {
                 // Source vanished since scan; nothing to back up. Deletions are never propagated.
@@ -288,6 +297,7 @@ public actor BackupEngine {
         switch error {
         case let e as CloudError: return e.description
         case let e as AuthError: return e.description
+        case let e as ScanError: return e.description
         default: return error.localizedDescription
         }
     }
@@ -307,6 +317,10 @@ public actor BackupEngine {
             f.lastError = try store.jobs(folderID: folderID).first { $0.state == .failed }?.lastError
         } else if counts.uploading > 0 {
             f.status = .uploading
+        } else if let root = FolderTree(try store.allFolders()).root(of: folderID),
+                  !FileManager.default.fileExists(atPath: root.path) {
+            f.status = .needsAttention
+            f.lastError = ScanError.folderMissing(root.path).description
         } else if counts.queued > 0 {
             f.status = .queued
             f.lastError = try store.jobs(folderID: folderID).compactMap(\.lastError).first

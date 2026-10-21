@@ -17,8 +17,14 @@ Phase 1 (scheduled backup MVP) in progress:
 - A file only counts as backed up after Graph returns the item and both its size and QuickXorHash match the local file.
 - Upload-only: local deletions are never propagated, local files are never modified.
 - Menu-bar status, keeps running with the window closed, optional login item.
+- Follows managed folders that are moved or renamed in Finder (via bookmarks) without re-uploading; an unreachable folder shows *Needs attention* instead of looking empty.
 
 Cloud-only availability is recorded per folder but only takes effect for folders inside OneDrive's own synced folder (Phase 3).
+
+## Install
+
+Download `Branch-<version>.zip` from [Releases](https://github.com/MJTheGreat3/Branch/releases), unzip, and move `Branch.app` to Applications.
+The build is ad-hoc signed, not notarized, so the first launch needs right-click → **Open** (or `xattr -dr com.apple.quarantine /Applications/Branch.app`).
 
 ## OneDrive setup
 
@@ -30,7 +36,7 @@ Branch signs in with the device-code flow and needs your own Azure app registrat
 3. API permissions → Microsoft Graph → Delegated: `Files.ReadWrite.AppFolder`, `offline_access`.
 4. Copy the Application (client) ID into Branch → Account.
 
-Backups land in `OneDrive/Apps/Branch/<folder name>/…`. Tokens are kept in the Keychain.
+Backups land in `OneDrive/Apps/<registration name>/<folder name>/…` (name the registration "Branch" to get `Apps/Branch`). Tokens are kept in the Keychain.
 
 ## Layout
 

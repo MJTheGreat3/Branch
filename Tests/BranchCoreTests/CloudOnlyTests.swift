@@ -187,4 +187,45 @@ final class CloudOnlyTests: XCTestCase {
         try store.upsert(FileRecord(rootID: root.id, relativePath: "Other/x", size: 1, modified: Date(), uploadedAt: Date()))
         XCTAssertEqual(try store.offloadCandidates(rootID: root.id, prefix: nfd, limit: 10).map(\.relativePath), [nfd + "/cv.pdf"])
     }
+
+    func testRestoreFolderInPlaceKeepsStructure() async throws {
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("Docs/Sem/notes/week1"), withIntermediateDirectories: true)
+        try writeOld("Docs/Sem/notes/week1/a.md", "a")
+        try writeOld("Docs/Sem/notes/b.md", "b")
+        try writeOld("Docs/Sem/c.pdf", "c")
+        try writeOld("Docs/other.txt", "o")
+        let docs = try await cloudOnlyDocs()
+        XCTAssertEqual(try store.offloadedTotals(rootID: docs.id, prefix: "Sem").count, 3)
+        // Folders stay; each file is a stand-in at its own spot.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path("Docs/Sem/notes/week1/a.md.branch")))
+
+        final class Progress: @unchecked Sendable { var calls: [(Int, Int)] = [] }
+        let progress = Progress()
+        let result = await engine.restore(paths: [path("Docs/Sem/notes")]) { progress.calls.append(($0, $1)) }
+        XCTAssertEqual(result.restored, 2)
+        XCTAssertEqual(result.total, 2)
+        XCTAssertEqual(progress.calls.last?.0, 2)
+        XCTAssertEqual(try String(contentsOfFile: path("Docs/Sem/notes/week1/a.md"), encoding: .utf8), "a")
+        XCTAssertEqual(try String(contentsOfFile: path("Docs/Sem/notes/b.md"), encoding: .utf8), "b")
+        // Siblings outside the selection stay in the cloud.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path("Docs/Sem/c.pdf.branch")))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path("Docs/other.txt.branch")))
+        XCTAssertEqual(try store.offloadedTotals(rootID: docs.id, prefix: "Sem").count, 1)
+    }
+
+    func testRestoreByOriginalPathAndReportFailures() async throws {
+        try writeOld("Docs/a.txt", "a")
+        try writeOld("Docs/b.txt", "b")
+        _ = try await cloudOnlyDocs()
+        // Original path (as if picked in an old list) finds its stand-in.
+        var result = await engine.restore(paths: [path("Docs/a.txt")])
+        XCTAssertEqual(result.restored, 1)
+
+        drive.corruptDownload = true
+        result = await engine.restore(paths: [path("Docs")])
+        XCTAssertEqual(result.total, 1)
+        XCTAssertEqual(result.restored, 0)
+        XCTAssertEqual(result.failures.count, 1)
+        XCTAssertTrue(result.failures[0].hasPrefix("b.txt:"))
+    }
 }

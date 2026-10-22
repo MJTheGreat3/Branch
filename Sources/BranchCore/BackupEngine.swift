@@ -345,24 +345,71 @@ public actor BackupEngine {
         return path
     }
 
-    /// Restores every stand-in under a folder. Returns how many were restored and the failures.
-    public func restoreAll(under folderPath: String) async -> (restored: Int, failures: [String]) {
-        var restored = 0
-        var failures: [String] = []
-        let walker = FileManager.default.enumerator(atPath: folderPath)
-        var standIns: [String] = []
-        while let rel = walker?.nextObject() as? String {
-            if StandIn.isStandIn(rel) { standIns.append((folderPath as NSString).appendingPathComponent(rel)) }
-        }
-        for s in standIns {
-            do {
-                try await restore(standInPath: s)
-                restored += 1
-            } catch {
-                failures.append(Self.message(for: error))
+    public struct RestoreResult: Equatable, Sendable {
+        public var restored = 0
+        public var total = 0
+        public var failures: [String] = []
+    }
+
+    /// Stand-ins a user selection refers to: a stand-in itself, every stand-in under a folder,
+    /// or an original file path whose stand-in sits next to it.
+    public nonisolated static func standIns(for paths: [String]) -> [String] {
+        let fm = FileManager.default
+        var out: [String] = []
+        for path in paths {
+            var isDir: ObjCBool = false
+            if StandIn.isStandIn(path), fm.fileExists(atPath: path) {
+                out.append(path)
+            } else if fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue {
+                let walker = fm.enumerator(atPath: path)
+                while let rel = walker?.nextObject() as? String {
+                    if StandIn.isStandIn(rel) { out.append((path as NSString).appendingPathComponent(rel)) }
+                }
+            } else if fm.fileExists(atPath: StandIn.path(for: path)) {
+                out.append(StandIn.path(for: path))
             }
         }
-        return (restored, failures)
+        return Array(Set(out)).sorted()
+    }
+
+    /// Restores files and whole folders in place, a few downloads at a time.
+    public func restore(
+        paths: [String],
+        progress: (@Sendable (_ done: Int, _ total: Int) -> Void)? = nil
+    ) async -> RestoreResult {
+        let targets = Self.standIns(for: paths)
+        var result = RestoreResult(total: targets.count)
+        var done = 0
+        let width = 4
+        var index = 0
+        while index < targets.count {
+            let window = targets[index..<min(index + width, targets.count)]
+            index += window.count
+            await withTaskGroup(of: String?.self) { group in
+                for s in window {
+                    group.addTask {
+                        do {
+                            try await self.restore(standInPath: s)
+                            return nil
+                        } catch {
+                            return "\((StandIn.originalPath(for: s) as NSString).lastPathComponent): \(Self.message(for: error))"
+                        }
+                    }
+                }
+                for await failure in group {
+                    done += 1
+                    if let failure { result.failures.append(failure) } else { result.restored += 1 }
+                    progress?(done, targets.count)
+                }
+            }
+        }
+        return result
+    }
+
+    /// Restores every stand-in under a folder.
+    public func restoreAll(under folderPath: String) async -> (restored: Int, failures: [String]) {
+        let r = await restore(paths: [folderPath])
+        return (r.restored, r.failures)
     }
 
     // MARK: Queue

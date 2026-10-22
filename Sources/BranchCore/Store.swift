@@ -207,6 +207,17 @@ public final class Store: @unchecked Sendable {
         """, params, Self.fileRecord)
     }
 
+    /// Files in OneDrive only under a folder (relative prefix, "" for the whole root).
+    public func offloadedTotals(rootID: Int64, prefix: String) throws -> (count: Int, bytes: Int64) {
+        let scoped = prefix.isEmpty ? "" : "AND substr(rel_path, 1, ?) = ?"
+        var params: [any SQLBindable] = [rootID]
+        if !prefix.isEmpty { params += [(prefix + "/").unicodeScalars.count, prefix + "/"] }
+        return try db.first("""
+        SELECT COUNT(*), COALESCE(SUM(size), 0) FROM files
+        WHERE root_id = ? AND offloaded_at IS NOT NULL \(scoped)
+        """, params) { (Int($0.int(0)), $0.int(1)) } ?? (0, 0)
+    }
+
     public func offloadedFiles(rootID: Int64) throws -> [FileRecord] {
         try db.all("SELECT \(Self.fileColumns) FROM files WHERE root_id = ? AND offloaded_at IS NOT NULL",
                     [rootID], Self.fileRecord)

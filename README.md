@@ -8,7 +8,8 @@ See [docs/cloud_folder_manager_app_brief.md](docs/cloud_folder_manager_app_brief
 
 Phase 1 (scheduled backup MVP) in progress:
 
-- Add/remove folders, tree with inherited settings and child overrides, excluded subfolders.
+- Add/remove folders, tree with inherited settings and child overrides.
+- Contents browser: tick or untick any subfolder or file inside a managed folder (tri-state checkboxes, pattern-skipped items greyed), opened automatically when a folder is added so nothing uploads before you choose.
 - Editable skip patterns: a global list (Account) plus per-folder patterns inherited by subfolders. Name globs (`*.tmp`, `node_modules`) or relative-path globs (`Projects/*/build`).
 - Per-folder schedules (15 min → weekly), pause/resume, back up now.
 - Change detection by size/mtime, then SHA-256, so unchanged files are never re-uploaded.
@@ -17,6 +18,7 @@ Phase 1 (scheduled backup MVP) in progress:
 - A file only counts as backed up after Graph returns the item and both its size and QuickXorHash match the local file.
 - Upload-only: local deletions are never propagated, local files are never modified.
 - Menu-bar status, keeps running with the window closed, optional login item.
+- Notifications for a finished first backup, a folder needing attention (and recovering), and OneDrive running low on space; storage warning on the overview.
 - Follows managed folders that are moved or renamed in Finder (via bookmarks) without re-uploading; an unreachable folder shows *Needs attention* instead of looking empty.
 
 Cloud-only availability is recorded per folder but only takes effect for folders inside OneDrive's own synced folder (Phase 3).
@@ -41,7 +43,9 @@ Backups land in `OneDrive/Apps/<registration name>/<folder name>/…` (name the 
 ## Layout
 
 - `Sources/BranchCore` — models, SQLite store, folder tree, scanner, backup engine, Graph client, auth, Keychain.
-- `Sources/Branch` — SwiftUI app and menu-bar extra.
+- `Sources/BranchUI` — SwiftUI views and app model.
+- `Sources/Branch` — app entry point (window + menu-bar extra).
+- `Sources/BranchSnapshots` — renders the main screens offscreen to PNG: `swift run BranchSnapshots build/snapshots`.
 - `Tests/BranchCoreTests` — unit tests for the core.
 
 ## Build

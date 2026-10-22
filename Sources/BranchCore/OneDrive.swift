@@ -37,6 +37,10 @@ public protocol CloudDrive: Sendable {
     /// Next byte offset the server expects for an existing session.
     func sessionOffset(session: URL) async throws -> Int64
     func quota() async throws -> DriveQuota
+    /// Current state of a file in the cloud, or nil if it isn't there.
+    func item(at remotePath: String) async throws -> RemoteItem?
+    /// Downloads a file's content to `destination` (which must not exist).
+    func download(remotePath: String, to destination: URL) async throws
 }
 
 public struct CloudError: Error, Equatable, CustomStringConvertible {
@@ -173,6 +177,33 @@ public struct GraphDrive: CloudDrive {
         }
         func n(_ k: String) -> Int64 { (q[k] as? NSNumber)?.int64Value ?? 0 }
         return DriveQuota(total: n("total"), used: n("used"), remaining: n("remaining"))
+    }
+
+    public func item(at remotePath: String) async throws -> RemoteItem? {
+        let url = URL(string: "\(base.absoluteString)/special/approot:/\(Self.encode(remotePath))")!
+        let (body, resp) = try await authorized(URLRequest(url: url))
+        if resp.statusCode == 404 { return nil }
+        try Self.check(resp, body)
+        return try Self.item(body)
+    }
+
+    public func download(remotePath: String, to destination: URL) async throws {
+        // Graph answers with a redirect to a pre-authenticated URL, which URLSession follows.
+        var req = URLRequest(url: itemURL(remotePath, suffix: "content"))
+        req.setValue("Bearer \(try await tokens.accessToken())", forHTTPHeaderField: "Authorization")
+        let (temp, resp): (URL, HTTPURLResponse)
+        do {
+            (temp, resp) = try await http.download(req)
+        } catch let e as URLError {
+            throw CloudError(kind: .network, message: e.localizedDescription)
+        }
+        guard (200..<300).contains(resp.statusCode) else {
+            let body = (try? Data(contentsOf: temp)) ?? Data()
+            try? FileManager.default.removeItem(at: temp)
+            try Self.check(resp, body)
+            return
+        }
+        try FileManager.default.moveItem(at: temp, to: destination)
     }
 
     // MARK: Response handling

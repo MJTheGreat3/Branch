@@ -85,6 +85,16 @@ public final class Store: @unchecked Sendable {
                 try db.setUserVersion(3)
             }
         }
+        if db.userVersion < 4 {
+            try db.transaction {
+                try db.execute("""
+                ALTER TABLE files ADD COLUMN quick_xor TEXT;
+                ALTER TABLE files ADD COLUMN offloaded_at REAL;
+                ALTER TABLE files ADD COLUMN restored_at REAL;
+                """)
+                try db.setUserVersion(4)
+            }
+        }
     }
 
     // MARK: Folders
@@ -166,13 +176,43 @@ public final class Store: @unchecked Sendable {
     private static func fileRecord(_ r: Row) -> FileRecord {
         FileRecord(
             rootID: r.int(0), relativePath: r.text(1), size: r.int(2), modified: r.date(3),
-            sha256: r.textOrNil(4), remoteItemID: r.textOrNil(5), uploadedAt: r.dateOrNil(6)
+            sha256: r.textOrNil(4), remoteItemID: r.textOrNil(5), uploadedAt: r.dateOrNil(6),
+            quickXorHash: r.textOrNil(7), offloadedAt: r.dateOrNil(8), restoredAt: r.dateOrNil(9)
         )
+    }
+
+    private static let fileColumns =
+        "root_id, rel_path, size, modified, sha256, remote_item_id, uploaded_at, quick_xor, offloaded_at, restored_at"
+
+    public func file(rootID: Int64, relativePath: String) throws -> FileRecord? {
+        try db.first("SELECT \(Self.fileColumns) FROM files WHERE root_id = ? AND rel_path = ?",
+                     [rootID, relativePath], Self.fileRecord)
+    }
+
+    /// Uploaded, still-local files: candidates for freeing space.
+    /// `prefix` is a folder path relative to the root ("" for the whole root).
+    public func offloadCandidates(rootID: Int64, prefix: String, limit: Int) throws -> [FileRecord] {
+        let scoped = prefix.isEmpty ? "" : "AND substr(rel_path, 1, ?) = ?"
+        var params: [any SQLBindable] = [rootID]
+        // SQLite's substr counts code points, so match with unicodeScalars (macOS names are often decomposed).
+        if !prefix.isEmpty { params += [(prefix + "/").unicodeScalars.count, prefix + "/"] }
+        params.append(limit)
+        // Random order so files that aren't eligible yet can't starve the rest of a large folder.
+        return try db.all("""
+        SELECT \(Self.fileColumns) FROM files
+        WHERE root_id = ? AND uploaded_at IS NOT NULL AND offloaded_at IS NULL \(scoped)
+        ORDER BY random() LIMIT ?
+        """, params, Self.fileRecord)
+    }
+
+    public func offloadedFiles(rootID: Int64) throws -> [FileRecord] {
+        try db.all("SELECT \(Self.fileColumns) FROM files WHERE root_id = ? AND offloaded_at IS NOT NULL",
+                    [rootID], Self.fileRecord)
     }
 
     public func files(rootID: Int64) throws -> [String: FileRecord] {
         let rows = try db.all(
-            "SELECT root_id, rel_path, size, modified, sha256, remote_item_id, uploaded_at FROM files WHERE root_id = ?",
+            "SELECT \(Self.fileColumns) FROM files WHERE root_id = ?",
             [rootID], Self.fileRecord
         )
         return Dictionary(uniqueKeysWithValues: rows.map { ($0.relativePath, $0) })
@@ -180,12 +220,15 @@ public final class Store: @unchecked Sendable {
 
     public func upsert(_ f: FileRecord) throws {
         try db.run("""
-        INSERT INTO files (root_id, rel_path, size, modified, sha256, remote_item_id, uploaded_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO files (root_id, rel_path, size, modified, sha256, remote_item_id, uploaded_at,
+                           quick_xor, offloaded_at, restored_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (root_id, rel_path) DO UPDATE SET
             size = excluded.size, modified = excluded.modified, sha256 = excluded.sha256,
-            remote_item_id = excluded.remote_item_id, uploaded_at = excluded.uploaded_at
-        """, [f.rootID, f.relativePath, f.size, f.modified, f.sha256, f.remoteItemID, f.uploadedAt])
+            remote_item_id = excluded.remote_item_id, uploaded_at = excluded.uploaded_at,
+            quick_xor = excluded.quick_xor, offloaded_at = excluded.offloaded_at, restored_at = excluded.restored_at
+        """, [f.rootID, f.relativePath, f.size, f.modified, f.sha256, f.remoteItemID, f.uploadedAt,
+              f.quickXorHash, f.offloadedAt, f.restoredAt])
     }
 
     public struct FileTotals: Equatable, Sendable {
@@ -193,13 +236,22 @@ public final class Store: @unchecked Sendable {
         public var bytes: Int64
         public var uploadedCount: Int
         public var uploadedBytes: Int64
+        /// Files that now exist only in the cloud (local copy replaced by a stand-in).
+        public var offloadedCount: Int
+        public var offloadedBytes: Int64
 
-        public init(count: Int = 0, bytes: Int64 = 0, uploadedCount: Int = 0, uploadedBytes: Int64 = 0) {
+        public init(count: Int = 0, bytes: Int64 = 0, uploadedCount: Int = 0, uploadedBytes: Int64 = 0,
+                    offloadedCount: Int = 0, offloadedBytes: Int64 = 0) {
             self.count = count
             self.bytes = bytes
             self.uploadedCount = uploadedCount
             self.uploadedBytes = uploadedBytes
+            self.offloadedCount = offloadedCount
+            self.offloadedBytes = offloadedBytes
         }
+
+        /// Bytes of managed content still taking space on this Mac.
+        public var localBytes: Int64 { bytes - offloadedBytes }
     }
 
     public func fileTotals(rootID: Int64? = nil) throws -> FileTotals {
@@ -208,11 +260,14 @@ public final class Store: @unchecked Sendable {
         return try db.first("""
         SELECT COUNT(*), COALESCE(SUM(size), 0),
                COALESCE(SUM(uploaded_at IS NOT NULL), 0),
-               COALESCE(SUM(CASE WHEN uploaded_at IS NOT NULL THEN size ELSE 0 END), 0)
+               COALESCE(SUM(CASE WHEN uploaded_at IS NOT NULL THEN size ELSE 0 END), 0),
+               COALESCE(SUM(offloaded_at IS NOT NULL), 0),
+               COALESCE(SUM(CASE WHEN offloaded_at IS NOT NULL THEN size ELSE 0 END), 0)
         FROM files \(filter)
         """, params) {
-            FileTotals(count: Int($0.int(0)), bytes: $0.int(1), uploadedCount: Int($0.int(2)), uploadedBytes: $0.int(3))
-        } ?? FileTotals(count: 0, bytes: 0, uploadedCount: 0, uploadedBytes: 0)
+            FileTotals(count: Int($0.int(0)), bytes: $0.int(1), uploadedCount: Int($0.int(2)), uploadedBytes: $0.int(3),
+                       offloadedCount: Int($0.int(4)), offloadedBytes: $0.int(5))
+        } ?? FileTotals()
     }
 
     // MARK: Jobs

@@ -10,6 +10,15 @@ public actor BackupEngine {
         public var maxAttempts = 8
         public var baseBackoff: TimeInterval = 30
         public var maxBackoff: TimeInterval = 3600
+        /// A file must be unchanged this long before its local copy is offloaded.
+        public var offloadMinAge: TimeInterval = 5 * 60
+        /// Restored files stay local this long even in a cloud-only folder.
+        public var restoreHold: TimeInterval = 7 * 24 * 3600
+        public var offloadBatch = 200
+        /// How an offloaded local copy is disposed of. Defaults to the user's Trash.
+        public var moveToTrash: @Sendable (URL) throws -> Void = { url in
+            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        }
         public init() {}
     }
 
@@ -18,6 +27,7 @@ public actor BackupEngine {
     private let options: Options
     private let now: @Sendable () -> Date
     private var isProcessing = false
+    private var isOffloading = false
     private var onChange: (@Sendable () -> Void)?
 
     public init(
@@ -76,6 +86,7 @@ public actor BackupEngine {
         }
         notify()
         await processQueue()
+        await offloadPass()
     }
 
     // MARK: Scan
@@ -181,6 +192,179 @@ public actor BackupEngine {
         return kept
     }
 
+    // MARK: Cloud-only
+
+    /// Frees space in cloud-only folders. A local file is replaced by a stand-in only when it is
+    /// uploaded, unchanged since, idle for `offloadMinAge`, and OneDrive's copy matches its content
+    /// hash right now. The local copy goes to the Trash, never straight to deletion.
+    @discardableResult
+    public func offloadPass() async -> Int {
+        guard !isOffloading, let drive else { return 0 }
+        isOffloading = true
+        defer { isOffloading = false }
+
+        guard let tree = try? FolderTree(store.allFolders()) else { return 0 }
+        var offloaded = 0
+        for root in tree.roots {
+            guard let remoteName = root.remoteName else { continue }
+            reconcileStandIns(root: root)
+            let pending = Set((try? store.jobs(rootID: root.id).map(\.relativePath)) ?? [])
+            let cloudOnly = tree.folders.values.filter {
+                tree.root(of: $0.id)?.id == root.id && $0.availabilityOverride == .cloudOnly
+            }
+            for folder in cloudOnly {
+                let prefix = FolderTree.relative(folder.path, to: root.path) ?? ""
+                guard let candidates = try? store.offloadCandidates(rootID: root.id, prefix: prefix, limit: options.offloadBatch) else { continue }
+                for rec in candidates {
+                    if pending.contains(rec.relativePath) { continue }
+                    if await offload(rec, root: root, remoteName: remoteName, tree: tree, drive: drive) {
+                        offloaded += 1
+                    }
+                }
+            }
+        }
+        if offloaded > 0 { notify() }
+        return offloaded
+    }
+
+    private func offload(_ rec: FileRecord, root: ManagedFolder, remoteName: String, tree: FolderTree, drive: CloudDrive) async -> Bool {
+        let path = (root.path as NSString).appendingPathComponent(rec.relativePath)
+        guard let owner = tree.containing(path) else { return false }
+        let policy = tree.policy(for: owner.id)
+        guard policy.availability == .cloudOnly, !policy.isPaused, !policy.isExcluded else { return false }
+        let at = now()
+        if let restored = rec.restoredAt, at.timeIntervalSince(restored) < options.restoreHold { return false }
+
+        // Unchanged since upload and idle long enough.
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              (attrs[.size] as? NSNumber)?.int64Value == rec.size,
+              let mtime = attrs[.modificationDate] as? Date,
+              abs(mtime.timeIntervalSince(rec.modified)) < 0.001,
+              at.timeIntervalSince(mtime) >= options.offloadMinAge else { return false }
+
+        // The cloud copy must match this exact content now.
+        let remotePath = remoteName + "/" + rec.relativePath
+        guard let localHash = try? QuickXorHash.hash(path: path),
+              let remote = try? await drive.item(at: remotePath),
+              remote.size == rec.size,
+              let remoteHash = remote.quickXorHash, remoteHash == localHash else { return false }
+
+        let standInPath = StandIn.path(for: path)
+        let standIn = StandIn(
+            name: (path as NSString).lastPathComponent, size: rec.size, modified: rec.modified,
+            quickXorHash: localHash, remotePath: remotePath, offloadedAt: at
+        )
+        do {
+            try standIn.write(to: standInPath)
+            do {
+                try options.moveToTrash(URL(fileURLWithPath: path))
+            } catch {
+                try? FileManager.default.removeItem(atPath: standInPath)
+                return false
+            }
+            var updated = rec
+            updated.offloadedAt = at
+            updated.quickXorHash = localHash
+            try store.upsert(updated)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Repairs offloaded records whose file came back by other means (put back from the Trash,
+    /// or a new file saved at that path): the record is local again and the stand-in goes.
+    private func reconcileStandIns(root: ManagedFolder) {
+        guard let records = try? store.offloadedFiles(rootID: root.id) else { return }
+        for var rec in records {
+            let path = (root.path as NSString).appendingPathComponent(rec.relativePath)
+            guard FileManager.default.fileExists(atPath: path) else { continue }
+            try? FileManager.default.removeItem(atPath: StandIn.path(for: path))
+            rec.offloadedAt = nil
+            try? store.upsert(rec)
+        }
+    }
+
+    public enum RestoreError: Error, Equatable, CustomStringConvertible {
+        case notSignedIn
+        case notAStandIn(String)
+        case fileExists(String)
+        case verificationFailed(String)
+
+        public var description: String {
+            switch self {
+            case .notSignedIn: return "Sign in to OneDrive to restore files."
+            case .notAStandIn(let p): return "\((p as NSString).lastPathComponent) isn't a Branch stand-in."
+            case .fileExists(let p): return "A different file already exists at \(p); it was left untouched."
+            case .verificationFailed(let n): return "The downloaded copy of \(n) didn't match the backup, so it wasn't put in place."
+            }
+        }
+    }
+
+    /// Downloads the file a stand-in points to, verifies it, and puts it back in place.
+    /// Works from the stand-in alone, so it doesn't depend on the database.
+    @discardableResult
+    public func restore(standInPath: String) async throws -> String {
+        guard let drive else { throw RestoreError.notSignedIn }
+        guard StandIn.isStandIn(standInPath), let standIn = try? StandIn.read(from: standInPath) else {
+            throw RestoreError.notAStandIn(standInPath)
+        }
+        let path = StandIn.originalPath(for: standInPath)
+        let fm = FileManager.default
+
+        if let attrs = try? fm.attributesOfItem(atPath: path) {
+            // Already back (e.g. put back from the Trash). Only tidy up if it's the same file.
+            guard (attrs[.size] as? NSNumber)?.int64Value == standIn.size,
+                  (try? QuickXorHash.hash(path: path)) == standIn.quickXorHash else {
+                throw RestoreError.fileExists(path)
+            }
+        } else {
+            let dir = (path as NSString).deletingLastPathComponent
+            let temp = URL(fileURLWithPath: dir).appendingPathComponent(".\(standIn.name).branch-restore-\(UUID().uuidString)")
+            try await drive.download(remotePath: standIn.remotePath, to: temp)
+            let size = ((try? fm.attributesOfItem(atPath: temp.path))?[.size] as? NSNumber)?.int64Value
+            guard size == standIn.size, (try? QuickXorHash.hash(path: temp.path)) == standIn.quickXorHash else {
+                try? fm.removeItem(at: temp)
+                throw RestoreError.verificationFailed(standIn.name)
+            }
+            try fm.setAttributes([.modificationDate: standIn.modified], ofItemAtPath: temp.path)
+            try fm.moveItem(at: temp, to: URL(fileURLWithPath: path))
+        }
+        try? fm.removeItem(atPath: standInPath)
+
+        // Keep it local for a while so a cloud-only folder doesn't offload it straight away.
+        let tree = FolderTree(try store.allFolders())
+        if let owner = tree.containing(path), let root = tree.root(of: owner.id),
+           let rel = FolderTree.relative(path, to: root.path),
+           var rec = try store.file(rootID: root.id, relativePath: rel) {
+            rec.offloadedAt = nil
+            rec.restoredAt = now()
+            try store.upsert(rec)
+        }
+        notify()
+        return path
+    }
+
+    /// Restores every stand-in under a folder. Returns how many were restored and the failures.
+    public func restoreAll(under folderPath: String) async -> (restored: Int, failures: [String]) {
+        var restored = 0
+        var failures: [String] = []
+        let walker = FileManager.default.enumerator(atPath: folderPath)
+        var standIns: [String] = []
+        while let rel = walker?.nextObject() as? String {
+            if StandIn.isStandIn(rel) { standIns.append((folderPath as NSString).appendingPathComponent(rel)) }
+        }
+        for s in standIns {
+            do {
+                try await restore(standInPath: s)
+                restored += 1
+            } catch {
+                failures.append(Self.message(for: error))
+            }
+        }
+        return (restored, failures)
+    }
+
     // MARK: Queue
 
     /// Uploads due jobs until none remain runnable now.
@@ -245,7 +429,7 @@ public actor BackupEngine {
             try store.db.transaction {
                 try store.upsert(FileRecord(
                     rootID: job.rootID, relativePath: job.relativePath, size: job.size, modified: job.modified,
-                    sha256: job.sha256, remoteItemID: item.id, uploadedAt: now()
+                    sha256: job.sha256, remoteItemID: item.id, uploadedAt: now(), quickXorHash: localHash
                 ))
                 try store.deleteJob(id: job.id)
             }
@@ -336,6 +520,7 @@ public actor BackupEngine {
         case let e as CloudError: return e.description
         case let e as AuthError: return e.description
         case let e as ScanError: return e.description
+        case let e as RestoreError: return e.description
         default: return error.localizedDescription
         }
     }

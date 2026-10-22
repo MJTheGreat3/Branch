@@ -107,7 +107,8 @@ public enum Scanner {
                 if values?.isDirectory == true { walker.skipDescendants() }
                 continue
             }
-            guard values?.isSymbolicLink != true, values?.isRegularFile == true, let rel else { continue }
+            guard values?.isSymbolicLink != true, values?.isRegularFile == true, let rel,
+                  !StandIn.isStandIn(path) else { continue }
             out.append(ScannedFile(
                 relativePath: rel,
                 size: Int64(values?.fileSize ?? 0),

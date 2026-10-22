@@ -40,8 +40,8 @@ public enum AvailabilityMode: String, CaseIterable, Codable, Sendable, Identifia
 
     public var label: String {
         switch self {
-        case .localAndCloud: return "Keep local and in OneDrive"
-        case .cloudOnly: return "Cloud-only (on demand)"
+        case .localAndCloud: return "Keep on this Mac and in OneDrive"
+        case .cloudOnly: return "Cloud-only (free up space)"
         }
     }
 
@@ -50,7 +50,7 @@ public enum AvailabilityMode: String, CaseIterable, Codable, Sendable, Identifia
         case .localAndCloud:
             return "Files stay on this Mac and a copy is kept in OneDrive."
         case .cloudOnly:
-            return "Files live in OneDrive and download when opened. Requires the folder to be inside OneDrive's managed folder."
+            return "Once a file is verified in OneDrive and hasn't changed for a few minutes, Branch moves the local copy to the Trash and leaves a small “.branch” stand-in. Double-click a stand-in, or use Restore, to download it again. Empty the Trash to actually free the space."
         }
     }
 }
@@ -141,6 +141,12 @@ public struct FileRecord: Hashable, Sendable {
     public var sha256: String?
     public var remoteItemID: String?
     public var uploadedAt: Date?
+    /// QuickXorHash OneDrive confirmed for the uploaded copy.
+    public var quickXorHash: String?
+    /// Set while the local copy has been replaced by a `.branch` stand-in.
+    public var offloadedAt: Date?
+    /// Restored from the cloud recently; kept local for a while even in a cloud-only folder.
+    public var restoredAt: Date?
 
     public init(
         rootID: Int64,
@@ -149,7 +155,10 @@ public struct FileRecord: Hashable, Sendable {
         modified: Date,
         sha256: String? = nil,
         remoteItemID: String? = nil,
-        uploadedAt: Date? = nil
+        uploadedAt: Date? = nil,
+        quickXorHash: String? = nil,
+        offloadedAt: Date? = nil,
+        restoredAt: Date? = nil
     ) {
         self.rootID = rootID
         self.relativePath = relativePath
@@ -158,6 +167,9 @@ public struct FileRecord: Hashable, Sendable {
         self.sha256 = sha256
         self.remoteItemID = remoteItemID
         self.uploadedAt = uploadedAt
+        self.quickXorHash = quickXorHash
+        self.offloadedAt = offloadedAt
+        self.restoredAt = restoredAt
     }
 }
 

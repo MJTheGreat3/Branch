@@ -78,6 +78,25 @@ final class FakeDrive: CloudDrive, @unchecked Sendable {
     }
 
     func quota() async throws -> DriveQuota { DriveQuota(total: 100, used: 0, remaining: 100) }
+
+    var corruptDownload = false
+    var corruptRemoteHash = false
+
+    func item(at remotePath: String) async throws -> RemoteItem? {
+        lock.withLock {
+            guard let data = _files[remotePath] else { return nil }
+            return RemoteItem(id: "id-\(remotePath)", size: Int64(data.count),
+                              quickXorHash: corruptRemoteHash ? "bogus" : QuickXorHash.hash(data))
+        }
+    }
+
+    func download(remotePath: String, to destination: URL) async throws {
+        guard var data = lock.withLock({ _files[remotePath] }) else {
+            throw CloudError(kind: .notFound, status: 404, message: "not found")
+        }
+        if corruptDownload, !data.isEmpty { data[0] ^= 0xFF }
+        try data.write(to: destination)
+    }
 }
 
 final class Clock: @unchecked Sendable {

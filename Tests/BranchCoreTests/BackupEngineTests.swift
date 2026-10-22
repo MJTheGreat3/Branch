@@ -261,6 +261,47 @@ final class BackupEngineTests: XCTestCase {
         XCTAssertEqual(try store.folder(id: docs.id)?.bookmark, Data([2]))
     }
 
+    func testJobsMoveToSubfolderGivenOwnSettingsLater() async throws {
+        let docs = try library.add(path: path("Docs"))
+        try write("Docs/big/x.bin", Data("x".utf8))
+        try write("Docs/a.txt", Data("a".utf8))
+        try await engine.scan(folderID: docs.id)
+        XCTAssertEqual(Set(try store.jobs().map(\.folderID)), [docs.id])
+
+        // Subfolder gets its own settings while its file is still queued under the parent.
+        let big = try library.add(path: path("Docs/big"))
+        try await engine.scan(folderID: big.id)
+        let owners = Dictionary(uniqueKeysWithValues: try store.jobs().map { ($0.relativePath, $0.folderID) })
+        XCTAssertEqual(owners["big/x.bin"], big.id)
+        XCTAssertEqual(owners["a.txt"], docs.id)
+        XCTAssertEqual(try store.folder(id: big.id)?.status, .queued, "not falsely backed up")
+    }
+
+    func testUntickingAfterQueueDropsJobs() async throws {
+        let docs = try library.add(path: path("Docs"))
+        try write("Docs/big/x.bin", Data("x".utf8))
+        try write("Docs/a.txt", Data("a".utf8))
+        try await engine.scan(folderID: docs.id)
+        try library.setIncluded(path: path("Docs/big"), false)
+        try await engine.scan(folderID: docs.id)
+        XCTAssertEqual(try store.jobs().map(\.relativePath), ["a.txt"])
+        XCTAssertNil(try store.files(rootID: docs.id)["big/x.bin"])
+    }
+
+    func testDisplaySliceIsBoundedAndFailedFirst() async throws {
+        let docs = try library.add(path: path("Docs"))
+        for i in 0..<120 { try write("Docs/f\(i).txt", Data("\(i)".utf8)) }
+        try await engine.scan(folderID: docs.id)
+        var j = try XCTUnwrap(store.jobs().last)
+        j.state = .failed
+        j.lastError = "boom"
+        try store.update(j)
+        let slice = try store.jobs(folderID: docs.id, limit: 50)
+        XCTAssertEqual(slice.count, 50)
+        XCTAssertEqual(slice.first?.state, .failed)
+        XCTAssertEqual(try store.firstJobError(folderID: docs.id, failedOnly: true), "boom")
+    }
+
     func testRetryThenSuccess() async throws {
         let docs = try library.add(path: path("Docs"))
         try write("Docs/a.txt", Data("a".utf8))

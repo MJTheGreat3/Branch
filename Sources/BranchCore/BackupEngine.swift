@@ -95,7 +95,7 @@ public actor BackupEngine {
         let result = Scanner.diff(scanned: scanned, known: known, rootPath: root.path)
 
         let pending = Dictionary(
-            try store.jobs(folderID: nil).filter { $0.rootID == root.id }.map { ($0.relativePath, $0) },
+            try reconcileJobs(rootID: root.id, tree: tree).map { ($0.relativePath, $0) },
             uniquingKeysWith: { a, _ in a }
         )
         let at = now()
@@ -141,6 +141,33 @@ public actor BackupEngine {
             try store.update(f)
         }
         return queued
+    }
+
+    /// Brings queued jobs in line with the current tree: jobs under an excluded item are dropped,
+    /// and jobs now under a different managed folder (one given its own settings after they were
+    /// queued) move to it, so each folder's status reflects its own pending files.
+    func reconcileJobs(rootID: Int64, tree: FolderTree) throws -> [UploadJob] {
+        guard let root = tree.folders[rootID] else { return [] }
+        var kept: [UploadJob] = []
+        try store.db.transaction {
+            for job in try store.jobs(rootID: rootID) {
+                let path = (root.path as NSString).appendingPathComponent(job.relativePath)
+                guard let owner = tree.containing(path) else { continue }
+                if tree.policy(for: owner.id).isExcluded {
+                    if job.state != .uploading {
+                        try store.forgetPending(rootID: rootID, relativePaths: [job.relativePath])
+                    }
+                    continue
+                }
+                var j = job
+                if owner.id != job.folderID {
+                    try store.reassignJob(id: job.id, toFolder: owner.id)
+                    j.folderID = owner.id
+                }
+                kept.append(j)
+            }
+        }
+        return kept
     }
 
     // MARK: Queue
@@ -314,7 +341,7 @@ public actor BackupEngine {
             f.status = .paused
         } else if counts.failed > 0 {
             f.status = .needsAttention
-            f.lastError = try store.jobs(folderID: folderID).first { $0.state == .failed }?.lastError
+            f.lastError = try store.firstJobError(folderID: folderID, failedOnly: true)
         } else if counts.uploading > 0 {
             f.status = .uploading
         } else if let root = FolderTree(try store.allFolders()).root(of: folderID),
@@ -323,7 +350,7 @@ public actor BackupEngine {
             f.lastError = ScanError.folderMissing(root.path).description
         } else if counts.queued > 0 {
             f.status = .queued
-            f.lastError = try store.jobs(folderID: folderID).compactMap(\.lastError).first
+            f.lastError = try store.firstJobError(folderID: folderID, failedOnly: false)
         } else {
             f.status = .backedUp
             f.lastSuccess = now()

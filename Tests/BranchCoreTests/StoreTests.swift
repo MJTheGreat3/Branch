@@ -118,7 +118,7 @@ final class StoreTests: XCTestCase {
             """)
         }
         let migrated = try Store(db: Database(path: url.path))
-        XCTAssertEqual(migrated.db.userVersion, 2)
+        XCTAssertEqual(migrated.db.userVersion, 3)
         let f = try XCTUnwrap(migrated.folder(path: "/tmp/old"))
         XCTAssertEqual(f.excludePatterns, [])
     }

@@ -3,7 +3,27 @@ import BranchCore
 import BranchUI
 import SwiftUI
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Set by the app once its model exists; stand-ins opened before then wait here.
+    var model: AppModel? {
+        didSet { pending.forEach(handle); pending = [] }
+    }
+    private var pending: [URL] = []
+
+    /// Double-clicking a `.branch` stand-in in Finder restores the file and opens it.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        urls.forEach(handle)
+    }
+
+    private func handle(_ url: URL) {
+        guard let model else {
+            pending.append(url)
+            return
+        }
+        model.restore(standIn: url, open: true)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Needed when run as a bare SwiftPM executable rather than a bundle.
         NSApp.setActivationPolicy(.regular)
@@ -25,6 +45,7 @@ struct BranchApp: App {
         Window("Branch", id: "main") {
             ContentView()
                 .environmentObject(model)
+                .onAppear { delegate.model = model }
         }
         .commands {
             CommandGroup(after: .newItem) {

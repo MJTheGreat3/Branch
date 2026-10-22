@@ -515,7 +515,7 @@ public actor BackupEngine {
         try? store.update(job)
     }
 
-    static func message(for error: Error) -> String {
+    public static func message(for error: Error) -> String {
         switch error {
         case let e as CloudError: return e.description
         case let e as AuthError: return e.description

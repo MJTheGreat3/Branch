@@ -28,6 +28,8 @@ public final class AppModel: ObservableObject {
     @Published public var selection: Int64?
     /// Folder whose contents browser is open.
     @Published public var browsingID: Int64?
+    @Published private(set) var isRestoring = false
+    @Published private(set) var restoreProgress = ""
 
     let store: Store
     let library: FolderLibrary
@@ -223,6 +225,35 @@ public final class AppModel: ObservableObject {
     /// nil restores the built-in defaults.
     func setGlobalPatterns(_ text: String?) {
         perform { try store.setExclusionPatterns(text.map(ExclusionRules.parse)) }
+    }
+
+    /// Restores a stand-in (e.g. double-clicked in Finder) and optionally opens the file.
+    public func restore(standIn url: URL, open: Bool) {
+        Task {
+            do {
+                let restored = try await engine.restore(standInPath: url.path)
+                if open { NSWorkspace.shared.open(URL(fileURLWithPath: restored)) }
+            } catch {
+                errorMessage = BackupEngine.message(for: error)
+            }
+            reload()
+        }
+    }
+
+    func restoreAll(_ id: Int64) {
+        guard let folder = tree.folders[id], !isRestoring else { return }
+        isRestoring = true
+        restoreProgress = "Downloading…"
+        Task {
+            let result = await engine.restoreAll(under: folder.path)
+            isRestoring = false
+            restoreProgress = ""
+            if !result.failures.isEmpty {
+                errorMessage = "Restored \(result.restored) files; \(result.failures.count) couldn't be restored:\n"
+                    + result.failures.prefix(5).joined(separator: "\n")
+            }
+            reload()
+        }
     }
 
     func setPaused(_ id: Int64, _ paused: Bool) {

@@ -55,8 +55,13 @@ struct DashboardView: View {
             }
 
             Section("Storage") {
-                LabeledContent("Managed content on this Mac") { Text(Format.bytes(model.totals.bytes)) }
+                LabeledContent("Managed content on this Mac") { Text(Format.bytes(model.totals.localBytes)) }
                 LabeledContent("Backed up to OneDrive") { Text(Format.bytes(model.totals.uploadedBytes)) }
+                if model.totals.offloadedCount > 0 {
+                    LabeledContent("In OneDrive only (space freed)") {
+                        Text("\(Format.count(model.totals.offloadedCount, "file")) · \(Format.bytes(model.totals.offloadedBytes))")
+                    }
+                }
                 if let q = model.quota {
                     LabeledContent("OneDrive used") {
                         Text("\(Format.bytes(q.used)) of \(Format.bytes(q.total))")

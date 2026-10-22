@@ -64,7 +64,13 @@ func sampleModel(base: URL) throws -> (AppModel, ManagedFolder) {
     root.status = .backedUp
     try store.update(root)
     try store.upsert(FileRecord(rootID: root.id, relativePath: "Notes/todo.md", size: 12_000, modified: Date(), uploadedAt: Date()))
-    try store.upsert(FileRecord(rootID: root.id, relativePath: "Photos/2024/beach.jpg", size: 4_200_000, modified: Date()))
+    try store.upsert(FileRecord(rootID: root.id, relativePath: "Photos/2024/beach.jpg", size: 4_200_000, modified: Date(),
+                                uploadedAt: Date(), offloadedAt: Date()))
+    try library.setAvailability(id: root.id, .cloudOnly)
+    let beach = base.appendingPathComponent("Documents/Photos/2024/beach.jpg").path
+    try StandIn(name: "beach.jpg", size: 4_200_000, modified: Date(), quickXorHash: "x", remotePath: "Documents/Photos/2024/beach.jpg",
+                offloadedAt: Date()).write(to: StandIn.path(for: beach))
+    try fm.removeItem(atPath: beach)
 
     let model = AppModel(store: store, live: false, keychain: Keychain(service: "com.branch.snapshots"))
     return (model, root)
@@ -98,7 +104,7 @@ MainActor.assumeIsolated {
                        to: out.appendingPathComponent("folder\(suffix).png"))
             try render(SnapshotPanes.sidebar().environmentObject(model), size: CGSize(width: 300, height: 500), dark: dark,
                        to: out.appendingPathComponent("sidebar\(suffix).png"))
-            let expanded: Set<String> = [root.path + "/Photos", root.path + "/Photos/2025", root.path + "/Projects",
+            let expanded: Set<String> = [root.path + "/Photos", root.path + "/Photos/2024", root.path + "/Photos/2025", root.path + "/Projects",
                                          root.path + "/Projects/branch"]
             try render(ContentsBrowser(folder: root, expanded: expanded).environmentObject(model),
                        size: CGSize(width: 680, height: 600), dark: dark,

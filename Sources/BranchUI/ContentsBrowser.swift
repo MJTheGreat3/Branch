@@ -10,6 +10,12 @@ struct DiskEntry: Identifiable, Hashable {
     let isSymlink: Bool
     var id: String { path }
 
+    /// A `.branch` stand-in: the file's content is in OneDrive only.
+    var isStandIn: Bool { !isDirectory && StandIn.isStandIn(path) }
+    /// The path the stand-in represents; used for inclusion state.
+    var effectivePath: String { isStandIn ? StandIn.originalPath(for: path) : path }
+    var displayName: String { isStandIn ? (name as NSString).deletingPathExtension : name }
+
     /// Lists a directory, folders first, skipping hidden items unless asked.
     static func children(of path: String, showHidden: Bool) -> [DiskEntry] {
         let url = URL(fileURLWithPath: path, isDirectory: true)
@@ -74,6 +80,7 @@ public struct ContentsBrowser: View {
                         managed: model.tree.folders.values.first { $0.path == row.entry.path && !$0.isExcluded },
                         onToggleExpand: { toggleExpand(row.entry) },
                         onToggleIncluded: { toggleIncluded(row.entry) },
+                        onDownload: { download(row.entry) },
                         onCustomSettings: { customSettings(row.entry) }
                     )
                     .listRowSeparator(.hidden)
@@ -145,7 +152,7 @@ public struct ContentsBrowser: View {
             for entry in cache[path] ?? [] {
                 let s = blocked ? FolderTree.Inclusion.excluded : state(of: entry)
                 let childBlocked = blocked || s == .excluded || s == .skippedByPattern
-                if needle.isEmpty || entry.name.lowercased().contains(needle) {
+                if needle.isEmpty || entry.displayName.lowercased().contains(needle) {
                     out.append(Row(entry: entry, depth: depth, blockedByParent: blocked))
                 }
                 if entry.isDirectory, expanded.contains(entry.path) {
@@ -158,7 +165,7 @@ public struct ContentsBrowser: View {
     }
 
     private func state(of entry: DiskEntry) -> FolderTree.Inclusion {
-        model.tree.inclusion(of: entry.path, globalPatterns: model.globalPatterns)
+        model.tree.inclusion(of: entry.effectivePath, globalPatterns: model.globalPatterns)
     }
 
     private func load(_ path: String) {
@@ -186,10 +193,17 @@ public struct ContentsBrowser: View {
 
     private func toggleIncluded(_ entry: DiskEntry) {
         switch state(of: entry) {
-        case .excluded: model.setIncluded(entry.path, true)
-        case .included, .partial: model.setIncluded(entry.path, false)
+        case .excluded: model.setIncluded(entry.effectivePath, true)
+        case .included, .partial: model.setIncluded(entry.effectivePath, false)
         case .skippedByPattern, .outside: break
         }
+    }
+
+    private func download(_ entry: DiskEntry) {
+        model.restore(standIn: URL(fileURLWithPath: entry.path), open: false)
+        // The stand-in is replaced by the real file; list the folder again.
+        let parent = (entry.path as NSString).deletingLastPathComponent
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { cache[parent] = nil; load(parent) }
     }
 
     private func customSettings(_ entry: DiskEntry) {
@@ -211,6 +225,7 @@ private struct EntryRow: View {
     let managed: ManagedFolder?
     let onToggleExpand: () -> Void
     let onToggleIncluded: () -> Void
+    let onDownload: () -> Void
     let onCustomSettings: () -> Void
 
     private var dimmed: Bool {
@@ -240,10 +255,16 @@ private struct EntryRow: View {
             .disabled(blockedByParent || state == .skippedByPattern || entry.isSymlink)
             .help(checkboxHelp)
 
-            Image(nsImage: NSWorkspace.shared.icon(forFile: entry.path))
-                .resizable()
-                .frame(width: 16, height: 16)
-            Text(entry.name)
+            if entry.isStandIn {
+                Image(systemName: "icloud")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16, height: 16)
+            } else {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: entry.path))
+                    .resizable()
+                    .frame(width: 16, height: 16)
+            }
+            Text(entry.displayName)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .foregroundStyle(dimmed ? .secondary : .primary)
@@ -255,6 +276,12 @@ private struct EntryRow: View {
                     .foregroundStyle(.tertiary)
             }
             Spacer()
+            if entry.isStandIn {
+                Button("Download", action: onDownload)
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .help("Download this file from OneDrive and keep it on this Mac")
+            }
             if let managed, managed.intervalOverride != nil || managed.availabilityOverride != nil
                 || managed.isPaused || !managed.excludePatterns.isEmpty {
                 Button("Custom settings", action: onCustomSettings)
@@ -319,6 +346,7 @@ private struct EntryRow: View {
 
     private var caption: String? {
         if entry.isSymlink { return "link — not backed up" }
+        if entry.isStandIn && !blockedByParent { return "in OneDrive only" }
         if blockedByParent { return nil }
         switch state {
         case .skippedByPattern: return "skipped by pattern"

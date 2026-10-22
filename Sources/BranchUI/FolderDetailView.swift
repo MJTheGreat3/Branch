@@ -6,6 +6,8 @@ struct FolderDetailView: View {
     @EnvironmentObject var model: AppModel
     let folder: ManagedFolder
     @State private var confirmingRemove = false
+    @State private var confirmingCloudOnly: AvailabilityMode?? = nil
+    @State private var confirmingRestoreAll = false
     @State private var patternsText = ""
 
     private var policy: EffectivePolicy { model.tree.policy(for: folder.id) }
@@ -124,13 +126,18 @@ struct FolderDetailView: View {
                     Text(policy.availability.explanation)
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                    if policy.availability == .cloudOnly && !OneDriveLocation.contains(folder.path) {
-                        Label(
-                            "This folder is outside OneDrive's synced folder, so it stays on this Mac. Cloud-only needs the folder to live inside OneDrive.",
-                            systemImage: "info.circle"
-                        )
-                        .font(.callout)
-                        .foregroundStyle(.orange)
+                    if let root, let t = model.fileTotals(rootID: root.id), t.offloadedCount > 0 {
+                        LabeledContent("In OneDrive only") {
+                            Text("\(Format.count(t.offloadedCount, "file")) · \(Format.bytes(t.offloadedBytes)) freed")
+                        }
+                        HStack {
+                            Button("Restore All Files…") { confirmingRestoreAll = true }
+                                .disabled(model.isRestoring)
+                            if model.isRestoring {
+                                ProgressView().controlSize(.small)
+                                Text(model.restoreProgress).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 } header: {
                     Text("Availability")
@@ -199,6 +206,28 @@ struct FolderDetailView: View {
         .navigationTitle(folder.name)
         .onAppear { patternsText = folder.excludePatterns.joined(separator: ", ") }
         .confirmationDialog(
+            "Free up space in “\(folder.name)”?",
+            isPresented: Binding(get: { confirmingCloudOnly != nil }, set: { if !$0 { confirmingCloudOnly = nil } })
+        ) {
+            Button("Make Cloud-only") {
+                if case .some(let mode) = confirmingCloudOnly { model.setAvailability(folder.id, mode) }
+                confirmingCloudOnly = nil
+            }
+        } message: {
+            Text("After each file is verified in OneDrive and has been unchanged for 5 minutes, Branch moves the local copy to the Trash and leaves a small “.branch” stand-in. Double-click a stand-in to download it again. Space is freed when you empty the Trash.")
+        }
+        .confirmationDialog(
+            "Restore all files in “\(folder.name)”?",
+            isPresented: $confirmingRestoreAll
+        ) {
+            Button("Restore and Keep on This Mac") {
+                if folder.availabilityOverride == .cloudOnly { model.setAvailability(folder.id, nil) }
+                model.restoreAll(folder.id)
+            }
+        } message: {
+            Text("Downloads every file that's currently in OneDrive only and switches this folder back to keeping files on this Mac. Make sure there's enough free disk space.")
+        }
+        .confirmationDialog(
             "Stop managing “\(folder.name)”?",
             isPresented: $confirmingRemove
         ) {
@@ -216,8 +245,17 @@ struct FolderDetailView: View {
         Binding(get: { folder.intervalOverride }, set: { model.setInterval(folder.id, $0) })
     }
 
+    /// Switching to cloud-only removes local copies, so it's confirmed first.
     private var availabilityBinding: Binding<AvailabilityMode?> {
-        Binding(get: { folder.availabilityOverride }, set: { model.setAvailability(folder.id, $0) })
+        Binding(get: { folder.availabilityOverride }, set: { newValue in
+            let inherited = folder.parentID.map { model.tree.policy(for: $0).availability } ?? FolderTree.defaultAvailability
+            let effective = newValue ?? inherited
+            if effective == .cloudOnly && policy.availability != .cloudOnly {
+                confirmingCloudOnly = .some(newValue)
+            } else {
+                model.setAvailability(folder.id, newValue)
+            }
+        })
     }
 }
 
@@ -253,15 +291,5 @@ struct JobRow: View {
 
     private var tint: Color {
         job.state == .failed ? .orange : .blue
-    }
-}
-
-/// Where the OneDrive sync client keeps its File Provider folder on macOS.
-enum OneDriveLocation {
-    static func contains(_ path: String) -> Bool {
-        let cloudStorage = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/CloudStorage").path
-        guard let rel = FolderTree.relative(path, to: cloudStorage) else { return false }
-        return rel.hasPrefix("OneDrive")
     }
 }

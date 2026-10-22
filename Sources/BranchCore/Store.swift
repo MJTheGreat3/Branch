@@ -194,10 +194,9 @@ public final class Store: @unchecked Sendable {
     /// Uploaded, still-local files: candidates for freeing space.
     /// `prefix` is a folder path relative to the root ("" for the whole root).
     public func offloadCandidates(rootID: Int64, prefix: String, limit: Int) throws -> [FileRecord] {
-        let scoped = prefix.isEmpty ? "" : "AND substr(rel_path, 1, ?) = ?"
+        let (scoped, scopeParams) = Self.prefixRange(prefix)
         var params: [any SQLBindable] = [rootID]
-        // SQLite's substr counts code points, so match with unicodeScalars (macOS names are often decomposed).
-        if !prefix.isEmpty { params += [(prefix + "/").unicodeScalars.count, prefix + "/"] }
+        params += scopeParams
         params.append(limit)
         // Random order so files that aren't eligible yet can't starve the rest of a large folder.
         return try db.all("""
@@ -207,11 +206,17 @@ public final class Store: @unchecked Sendable {
         """, params, Self.fileRecord)
     }
 
+    /// Matches paths under `prefix/` with a range on the (root_id, rel_path) primary key, so it uses
+    /// the index. "0" is the byte after "/", and comparisons are bytewise on the exact stored names.
+    static func prefixRange(_ prefix: String) -> (String, [any SQLBindable]) {
+        guard !prefix.isEmpty else { return ("", []) }
+        return ("AND rel_path >= ? AND rel_path < ?", [prefix + "/", prefix + "0"])
+    }
+
     /// Files in OneDrive only under a folder (relative prefix, "" for the whole root).
     public func offloadedTotals(rootID: Int64, prefix: String) throws -> (count: Int, bytes: Int64) {
-        let scoped = prefix.isEmpty ? "" : "AND substr(rel_path, 1, ?) = ?"
-        var params: [any SQLBindable] = [rootID]
-        if !prefix.isEmpty { params += [(prefix + "/").unicodeScalars.count, prefix + "/"] }
+        let (scoped, scopeParams) = Self.prefixRange(prefix)
+        let params: [any SQLBindable] = [rootID] + scopeParams
         return try db.first("""
         SELECT COUNT(*), COALESCE(SUM(size), 0) FROM files
         WHERE root_id = ? AND offloaded_at IS NOT NULL \(scoped)

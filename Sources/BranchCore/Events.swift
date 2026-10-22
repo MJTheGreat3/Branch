@@ -35,6 +35,7 @@ public enum BackupEvent: Equatable, Sendable {
     case needsAttention(folderID: Int64, name: String, reason: String?)
     case recovered(folderID: Int64, name: String)
     case quota(QuotaLevel)
+    case restored(name: String, count: Int, failed: Int)
 
     public var title: String {
         switch self {
@@ -42,6 +43,7 @@ public enum BackupEvent: Equatable, Sendable {
         case .needsAttention(_, let name, _): return "“\(name)” needs attention"
         case .recovered(_, let name): return "“\(name)” is backing up again"
         case .quota: return "OneDrive storage"
+        case .restored(let name, _, let failed): return failed == 0 ? "Restored “\(name)”" : "Restored “\(name)” with problems"
         }
     }
 
@@ -51,6 +53,9 @@ public enum BackupEvent: Equatable, Sendable {
         case .needsAttention(_, _, let reason): return reason ?? "Some files couldn't be backed up."
         case .recovered: return "The earlier problem cleared and files are being backed up."
         case .quota(let level): return level.message ?? ""
+        case .restored(_, let count, let failed):
+            let files = "\(count) file\(count == 1 ? "" : "s") downloaded and put back in place."
+            return failed == 0 ? files : files + " \(failed) couldn't be restored; open Branch for details."
         }
     }
 

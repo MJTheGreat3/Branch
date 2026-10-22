@@ -88,6 +88,9 @@ public struct MenuBarView: View {
             Button("Retry \(model.jobCounts.failed) Failed") { model.retryFailed() }
         }
         Divider()
+        if model.isRestoring {
+            Text("Restoring from OneDrive — \(model.restoreProgress)")
+        }
         Button("Back Up All Now") { model.backUpAllNow() }
             .disabled(model.tree.folders.isEmpty)
         Button("Open Branch") {

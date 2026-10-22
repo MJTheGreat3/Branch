@@ -80,6 +80,7 @@ public struct ContentsBrowser: View {
                         managed: model.tree.folders.values.first { $0.path == row.entry.path && !$0.isExcluded },
                         onToggleExpand: { toggleExpand(row.entry) },
                         onToggleIncluded: { toggleIncluded(row.entry) },
+                        cloudOnly: row.entry.isDirectory ? model.cloudOnlyTotals(under: row.entry.path).count : 0,
                         onDownload: { download(row.entry) },
                         onCustomSettings: { customSettings(row.entry) }
                     )
@@ -200,7 +201,11 @@ public struct ContentsBrowser: View {
     }
 
     private func download(_ entry: DiskEntry) {
-        model.restore(standIn: URL(fileURLWithPath: entry.path), open: false)
+        if entry.isDirectory {
+            model.restore(path: entry.path)
+        } else {
+            model.restore(standIn: URL(fileURLWithPath: entry.path), open: false)
+        }
         // The stand-in is replaced by the real file; list the folder again.
         let parent = (entry.path as NSString).deletingLastPathComponent
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { cache[parent] = nil; load(parent) }
@@ -225,6 +230,8 @@ private struct EntryRow: View {
     let managed: ManagedFolder?
     let onToggleExpand: () -> Void
     let onToggleIncluded: () -> Void
+    /// For folders: files inside that are in OneDrive only.
+    let cloudOnly: Int
     let onDownload: () -> Void
     let onCustomSettings: () -> Void
 
@@ -276,8 +283,8 @@ private struct EntryRow: View {
                     .foregroundStyle(.tertiary)
             }
             Spacer()
-            if entry.isStandIn {
-                Button("Download", action: onDownload)
+            if entry.isStandIn || cloudOnly > 0 {
+                Button(entry.isStandIn ? "Download" : "Download All", action: onDownload)
                     .buttonStyle(.borderless)
                     .font(.caption)
                     .help("Download this file from OneDrive and keep it on this Mac")
@@ -347,6 +354,7 @@ private struct EntryRow: View {
     private var caption: String? {
         if entry.isSymlink { return "link — not backed up" }
         if entry.isStandIn && !blockedByParent { return "in OneDrive only" }
+        if cloudOnly > 0 && !blockedByParent { return "\(cloudOnly) in OneDrive only" }
         if blockedByParent { return nil }
         switch state {
         case .skippedByPattern: return "skipped by pattern"

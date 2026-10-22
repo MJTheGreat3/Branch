@@ -240,20 +240,59 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    /// Restores files and folders in place (from Finder's Open With, the Dock, or the Services menu).
+    /// A single stand-in also opens once it's back.
+    public func restore(_ urls: [URL]) {
+        if urls.count == 1, StandIn.isStandIn(urls[0].path) {
+            restore(standIn: urls[0], open: true)
+            return
+        }
+        let paths = urls.map(\.path)
+        let name = urls.count == 1 ? urls[0].lastPathComponent : "\(urls.count) items"
+        guard !BackupEngine.standIns(for: paths).isEmpty else {
+            errorMessage = "Nothing in \(name) is in OneDrive only; everything is already on this Mac."
+            return
+        }
+        runRestore(paths, name: name)
+    }
+
     func restoreAll(_ id: Int64) {
-        guard let folder = tree.folders[id], !isRestoring else { return }
+        guard let folder = tree.folders[id] else { return }
+        runRestore([folder.path], name: folder.name)
+    }
+
+    func restore(path: String) {
+        runRestore([path], name: (path as NSString).lastPathComponent)
+    }
+
+    private func runRestore(_ paths: [String], name: String) {
+        guard !isRestoring else {
+            errorMessage = "A restore is already running. Try again when it finishes."
+            return
+        }
         isRestoring = true
-        restoreProgress = "Downloading…"
+        restoreProgress = "Preparing…"
         Task {
-            let result = await engine.restoreAll(under: folder.path)
+            let result = await engine.restore(paths: paths) { done, total in
+                Task { @MainActor in self.restoreProgress = "Restored \(done) of \(total)" }
+            }
             isRestoring = false
             restoreProgress = ""
+            notifier.post(.restored(name: name, count: result.restored, failed: result.failures.count))
             if !result.failures.isEmpty {
-                errorMessage = "Restored \(result.restored) files; \(result.failures.count) couldn't be restored:\n"
-                    + result.failures.prefix(5).joined(separator: "\n")
+                errorMessage = "Restored \(result.restored) of \(result.total) files in \(name). These couldn't be restored:\n"
+                    + result.failures.prefix(8).joined(separator: "\n")
+                    + (result.failures.count > 8 ? "\n…and \(result.failures.count - 8) more" : "")
             }
             reload()
         }
+    }
+
+    /// Files under `path` that are in OneDrive only, from the database (no disk walk).
+    func cloudOnlyTotals(under path: String) -> (count: Int, bytes: Int64) {
+        guard let owner = tree.containing(path), let root = tree.root(of: owner.id),
+              let rel = FolderTree.relative(path, to: root.path) else { return (0, 0) }
+        return (try? store.offloadedTotals(rootID: root.id, prefix: rel)) ?? (0, 0)
     }
 
     func setPaused(_ id: Int64, _ paused: Bool) {

@@ -15,6 +15,15 @@ struct DashboardView: View {
                     Button("Set Up OneDrive…") { showingAccount = true }
                 }
             }
+            if let message = model.quotaLevel.message {
+                Section {
+                    Label(message, systemImage: model.quotaLevel >= .insufficient ? "exclamationmark.icloud.fill" : "icloud")
+                        .foregroundStyle(model.quotaLevel >= .insufficient ? .red : .orange)
+                    Text("Free up space in OneDrive, or untick large items with Choose Items to Back Up.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
             if !model.isOnline {
                 Section {
                     Label("Offline. Backups are queued and will catch up when the connection returns.", systemImage: "wifi.slash")

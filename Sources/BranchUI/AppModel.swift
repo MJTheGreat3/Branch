@@ -18,6 +18,8 @@ public final class AppModel: ObservableObject {
     @Published private(set) var totals = Store.FileTotals()
     @Published private(set) var jobCounts = Store.JobCounts()
     @Published private(set) var quota: DriveQuota?
+    @Published private(set) var quotaLevel: QuotaLevel = .ok
+    @Published private(set) var notificationsEnabled = true
     @Published private(set) var globalPatterns: [String] = ExclusionRules.defaultPatterns
     @Published private(set) var isSignedIn = false
     @Published private(set) var isOnline = true
@@ -35,6 +37,12 @@ public final class AppModel: ObservableObject {
     private var timer: Timer?
     private let pathMonitor = NWPathMonitor()
     private var reloadPending = false
+    private let notifier = Notifier()
+    /// Last folder snapshot, for turning state changes into notifications. nil until the first load.
+    private var lastFolders: [ManagedFolder]?
+    private var lastQuotaCheck = Date.distantPast
+    private static let notificationsKey = "notifications.enabled"
+    private static let quotaInterval: TimeInterval = 30 * 60
     private static let clientIDKey = "auth.clientID"
     private static let tickInterval: TimeInterval = 60
 
@@ -56,7 +64,10 @@ public final class AppModel: ObservableObject {
         clientID = savedClientID ?? ""
         auth = AuthManager(config: savedClientID.map { AuthConfig(clientID: $0) }, keychain: keychain)
         engine = BackupEngine(store: store, drive: nil)
+        notificationsEnabled = ((try? store.setting(Self.notificationsKey)) ?? nil) != "0"
+        notifier.enabled = notificationsEnabled
         if live {
+            notifier.requestAuthorization()
             start()
         } else {
             reload()
@@ -75,7 +86,10 @@ public final class AppModel: ObservableObject {
         }
 
         timer = Timer.scheduledTimer(withTimeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.engine.tick() }
+            Task { @MainActor in
+                await self?.engine.tick()
+                await self?.refreshQuotaIfDue()
+            }
         }
 
         // Catch up after sleep and when the network returns.
@@ -116,6 +130,13 @@ public final class AppModel: ObservableObject {
             jobCounts = try store.jobCounts()
             globalPatterns = try store.exclusionPatterns()
             if let s = selection, tree.folders[s] == nil { selection = nil }
+
+            let folders = Array(tree.folders.values)
+            if let previous = lastFolders {
+                BackupEvent.changes(from: previous, to: folders).forEach(notifier.post)
+            }
+            lastFolders = folders
+            updateQuotaLevel()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -250,11 +271,39 @@ public final class AppModel: ObservableObject {
         isSignedIn = await auth.isSignedIn
         await engine.setDrive(isSignedIn ? GraphDrive(tokens: auth) : nil)
         if isSignedIn {
-            quota = try? await GraphDrive(tokens: auth).quota()
+            await refreshQuota()
             await engine.processQueue()
         } else {
             quota = nil
+            updateQuotaLevel()
         }
+    }
+
+    private func refreshQuotaIfDue() async {
+        guard isSignedIn, Date().timeIntervalSince(lastQuotaCheck) > Self.quotaInterval else { return }
+        await refreshQuota()
+    }
+
+    /// Quota may be unavailable with app-folder-only permission; then no warnings are shown.
+    private func refreshQuota() async {
+        lastQuotaCheck = Date()
+        quota = try? await GraphDrive(tokens: auth).quota()
+        updateQuotaLevel()
+    }
+
+    private func updateQuotaLevel() {
+        let level = quota.map { QuotaLevel.assess($0, pendingBytes: totals.bytes - totals.uploadedBytes) } ?? .ok
+        if let event = BackupEvent.quotaChange(from: quotaLevel, to: level) {
+            notifier.post(event)
+        }
+        quotaLevel = level
+    }
+
+    func setNotificationsEnabled(_ on: Bool) {
+        notificationsEnabled = on
+        notifier.enabled = on
+        try? store.setSetting(Self.notificationsKey, on ? nil : "0")
+        if on { notifier.requestAuthorization() }
     }
 
     func signOut() {

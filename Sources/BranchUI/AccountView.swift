@@ -88,6 +88,10 @@ struct AccountView: View {
             Section {
                 Toggle("Open Branch at login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, on in setLaunchAtLogin(on) }
+                Toggle("Notify me about problems, finished first backups and low storage", isOn: Binding(
+                    get: { model.notificationsEnabled },
+                    set: { model.setNotificationsEnabled($0) }
+                ))
             } header: {
                 Text("Background")
             } footer: {

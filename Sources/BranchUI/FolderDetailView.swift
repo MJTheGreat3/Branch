@@ -161,13 +161,25 @@ struct FolderDetailView: View {
                 }
             }
 
-            let jobs = model.jobs(for: folder.id)
-            if !jobs.isEmpty {
-                Section("Pending uploads") {
-                    ForEach(jobs) { JobRow(job: $0) }
-                    if jobs.contains(where: { $0.state == .failed }) {
+            let counts = model.jobCounts(for: folder.id)
+            let total = counts.queued + counts.uploading + counts.failed
+            if total > 0 {
+                Section {
+                    LabeledContent("Waiting") {
+                        Text("\(counts.queued) queued · \(counts.uploading) uploading · \(counts.failed) failed")
+                            .monospacedDigit()
+                    }
+                    // Only a slice is drawn; a big first backup can queue hundreds of thousands of files.
+                    ForEach(model.jobs(for: folder.id)) { JobRow(job: $0) }
+                    if total > AppModel.jobRowsShown {
+                        Text("…and \(total - AppModel.jobRowsShown) more")
+                            .foregroundStyle(.secondary)
+                    }
+                    if counts.failed > 0 {
                         Button("Retry Failed Uploads") { model.retryFailed(folder.id) }
                     }
+                } header: {
+                    Text("Pending uploads")
                 }
             }
 

@@ -45,6 +45,7 @@ public final class AppModel: ObservableObject {
     private static let quotaInterval: TimeInterval = 30 * 60
     private static let clientIDKey = "auth.clientID"
     private static let tickInterval: TimeInterval = 60
+    static let jobRowsShown = 50
 
     public convenience init() {
         do {
@@ -156,8 +157,12 @@ public final class AppModel: ObservableObject {
         return .backedUp
     }
 
+    func jobCounts(for folderID: Int64) -> Store.JobCounts {
+        (try? store.jobCounts(folderID: folderID)) ?? Store.JobCounts()
+    }
+
     func jobs(for folderID: Int64) -> [UploadJob] {
-        (try? store.jobs(folderID: folderID)) ?? []
+        (try? store.jobs(folderID: folderID, limit: Self.jobRowsShown)) ?? []
     }
 
     func fileTotals(rootID: Int64) -> Store.FileTotals? {

@@ -78,6 +78,13 @@ public final class Store: @unchecked Sendable {
                 try db.setUserVersion(2)
             }
         }
+        if db.userVersion < 3 {
+            // Per-folder status and counts run after every upload; keep them off full scans.
+            try db.transaction {
+                try db.execute("CREATE INDEX IF NOT EXISTS jobs_folder ON jobs(folder_id, state)")
+                try db.setUserVersion(3)
+            }
+        }
     }
 
     // MARK: Folders
@@ -247,6 +254,36 @@ public final class Store: @unchecked Sendable {
             return try db.all("SELECT \(Self.jobColumns) FROM jobs WHERE folder_id = ? ORDER BY id", [folderID], Self.job)
         }
         return try db.all("SELECT \(Self.jobColumns) FROM jobs ORDER BY id", [], Self.job)
+    }
+
+    /// A bounded slice for display: failed first, then uploading, then queued.
+    public func jobs(folderID: Int64, limit: Int) throws -> [UploadJob] {
+        // One indexed query per state instead of sorting every job of the folder.
+        var out: [UploadJob] = []
+        for state in [JobState.failed, .uploading, .queued] where out.count < limit {
+            out += try db.all(
+                "SELECT \(Self.jobColumns) FROM jobs WHERE folder_id = ? AND state = ? LIMIT ?",
+                [folderID, state.rawValue, limit - out.count], Self.job
+            )
+        }
+        return out
+    }
+
+    public func jobs(rootID: Int64) throws -> [UploadJob] {
+        try db.all("SELECT \(Self.jobColumns) FROM jobs WHERE root_id = ?", [rootID], Self.job)
+    }
+
+    /// Most relevant error for a folder: a failed job's, else any retrying job's.
+    public func firstJobError(folderID: Int64, failedOnly: Bool) throws -> String? {
+        let filter = failedOnly ? "AND state = 'failed'" : ""
+        return try db.first(
+            "SELECT last_error FROM jobs WHERE folder_id = ? AND last_error IS NOT NULL \(filter) LIMIT 1",
+            [folderID]
+        ) { $0.textOrNil(0) } ?? nil
+    }
+
+    public func reassignJob(id: Int64, toFolder folderID: Int64) throws {
+        try db.run("UPDATE jobs SET folder_id = ? WHERE id = ?", [folderID, id])
     }
 
     public func update(_ j: UploadJob) throws {

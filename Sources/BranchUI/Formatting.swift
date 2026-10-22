@@ -6,6 +6,10 @@ enum Format {
         ByteCountFormatter.string(fromByteCount: n, countStyle: .file)
     }
 
+    static func count(_ n: Int, _ noun: String) -> String {
+        "\(n) \(noun)\(n == 1 ? "" : "s")"
+    }
+
     static func relative(_ date: Date?, placeholder: String = "Never") -> String {
         guard let date else { return placeholder }
         if date == .distantPast { return "Now" }

@@ -1,12 +1,14 @@
 import BranchCore
 import SwiftUI
 
-struct ContentView: View {
+public struct ContentView: View {
     @EnvironmentObject var model: AppModel
     @State private var showingImporter = false
     @State private var showingAccount = false
 
-    var body: some View {
+    public init() {}
+
+    public var body: some View {
         NavigationSplitView {
             FolderListView(showingImporter: $showingImporter)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 280)
@@ -48,6 +50,15 @@ struct ContentView: View {
         .sheet(isPresented: $showingAccount) {
             AccountView()
         }
+        .sheet(isPresented: Binding(
+            get: { model.browsingID != nil },
+            set: { if !$0, let id = model.browsingID { model.finishBrowsing(id) } }
+        )) {
+            if let id = model.browsingID, let folder = model.tree.folders[id] {
+                ContentsBrowser(folder: folder)
+                    .environmentObject(model)
+            }
+        }
         .alert(
             "Something went wrong",
             isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })
@@ -61,11 +72,13 @@ struct ContentView: View {
 }
 
 /// Compact status and actions in the menu bar.
-struct MenuBarView: View {
+public struct MenuBarView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
 
-    var body: some View {
+    public init() {}
+
+    public var body: some View {
         Text("Branch — \(model.overallStatus.label)")
         Text("\(model.totals.uploadedCount) of \(model.totals.count) files backed up")
         if model.jobCounts.queued + model.jobCounts.uploading > 0 {
@@ -84,5 +97,24 @@ struct MenuBarView: View {
         Divider()
         Button("Quit Branch") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
+    }
+}
+
+/// Individual panes for offscreen snapshots; the split view itself doesn't render outside a real window.
+public enum SnapshotPanes {
+    @MainActor public static func overview() -> some View {
+        DashboardView(showingImporter: .constant(false), showingAccount: .constant(false))
+    }
+
+    @MainActor public static func folder(_ folder: ManagedFolder) -> some View {
+        FolderDetailView(folder: folder)
+    }
+
+    @MainActor public static func sidebar() -> some View {
+        FolderListView(showingImporter: .constant(false))
+    }
+
+    @MainActor public static func account() -> some View {
+        AccountView()
     }
 }

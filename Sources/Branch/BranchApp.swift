@@ -1,5 +1,6 @@
 import AppKit
 import BranchCore
+import BranchUI
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {

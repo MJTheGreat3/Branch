@@ -12,9 +12,9 @@ struct FolderNode: Identifiable, Hashable {
 
 /// Main-actor façade over the core: loads state for the UI and drives the engine.
 @MainActor
-final class AppModel: ObservableObject {
+public final class AppModel: ObservableObject {
     @Published private(set) var nodes: [FolderNode] = []
-    @Published private(set) var tree = FolderTree([])
+    @Published public private(set) var tree = FolderTree([])
     @Published private(set) var totals = Store.FileTotals()
     @Published private(set) var jobCounts = Store.JobCounts()
     @Published private(set) var quota: DriveQuota?
@@ -23,7 +23,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var isOnline = true
     @Published var clientID: String = ""
     @Published var errorMessage: String?
-    @Published var selection: Int64?
+    @Published public var selection: Int64?
+    /// Folder whose contents browser is open.
+    @Published public var browsingID: Int64?
 
     let store: Store
     let library: FolderLibrary
@@ -36,20 +38,29 @@ final class AppModel: ObservableObject {
     private static let clientIDKey = "auth.clientID"
     private static let tickInterval: TimeInterval = 60
 
-    init() {
+    public convenience init() {
         do {
-            store = try Store(db: Database(path: Store.defaultURL().path))
+            self.init(store: try Store(db: Database(path: Store.defaultURL().path)))
         } catch {
             // Fall back to memory so the UI can still explain the problem.
-            store = try! Store(db: Database(path: ":memory:"))
+            self.init(store: try! Store(db: Database(path: ":memory:")))
             errorMessage = "Could not open database: \(error.localizedDescription)"
         }
+    }
+
+    /// `live: false` loads state without starting the engine, timers or Keychain access (for snapshots).
+    public init(store: Store, live: Bool = true, keychain: Keychain = Keychain()) {
+        self.store = store
         library = FolderLibrary(store: store)
         let savedClientID = (try? store.setting(Self.clientIDKey)) ?? nil
         clientID = savedClientID ?? ""
-        auth = AuthManager(config: savedClientID.map { AuthConfig(clientID: $0) })
+        auth = AuthManager(config: savedClientID.map { AuthConfig(clientID: $0) }, keychain: keychain)
         engine = BackupEngine(store: store, drive: nil)
-        start()
+        if live {
+            start()
+        } else {
+            reload()
+        }
     }
 
     private func start() {
@@ -111,14 +122,15 @@ final class AppModel: ObservableObject {
     }
 
     private func node(_ f: ManagedFolder) -> FolderNode {
-        let kids = (tree.children[f.id] ?? []).map(node)
+        // Excluded items live in the contents browser, not the sidebar.
+        let kids = (tree.children[f.id] ?? []).filter { !$0.isExcluded }.map(node)
         return FolderNode(folder: f, children: kids.isEmpty ? nil : kids)
     }
 
-    var overallStatus: BackupStatus {
+    public var overallStatus: BackupStatus {
         if jobCounts.failed > 0 || tree.folders.values.contains(where: { $0.status == .needsAttention }) { return .needsAttention }
         if jobCounts.uploading > 0 { return .uploading }
-        if jobCounts.queued > 0 { return .queued }
+        if jobCounts.queued > 0 || totals.uploadedCount < totals.count { return .queued }
         if tree.folders.isEmpty { return .idle }
         return .backedUp
     }
@@ -133,19 +145,37 @@ final class AppModel: ObservableObject {
 
     // MARK: Folder actions
 
-    func addFolders(_ urls: [URL]) {
+    /// Adds folders. A new top-level folder opens its contents browser so the user can untick items.
+    func addFolders(_ urls: [URL], browse: Bool = true) {
         for url in urls {
             let bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
             perform {
-                let f = try library.add(path: url.path, bookmark: bookmark)
+                var f = try library.add(path: url.path, bookmark: bookmark)
                 selection = f.id
+                if browse && f.isRoot && urls.count == 1 {
+                    // Hold the first backup while the user picks items; Done starts it.
+                    // The fallback keeps a forgotten sheet from blocking backups forever.
+                    f.nextRun = Date().addingTimeInterval(Self.firstRunGrace)
+                    try store.update(f)
+                    browsingID = f.id
+                }
             }
         }
         backUpDueNow()
     }
 
-    func exclude(_ url: URL) {
-        perform { try library.exclude(path: url.path) }
+    private static let firstRunGrace: TimeInterval = 10 * 60
+
+    /// Called when the contents browser closes.
+    func finishBrowsing(_ id: Int64) {
+        browsingID = nil
+        if let f = tree.folders[id], f.isRoot, f.lastSuccess == nil {
+            backUpNow(id)
+        }
+    }
+
+    func setIncluded(_ path: String, _ included: Bool) {
+        perform { try library.setIncluded(path: path, included) }
     }
 
     func remove(_ id: Int64) {
@@ -174,17 +204,12 @@ final class AppModel: ObservableObject {
         if !paused { backUpDueNow() }
     }
 
-    func setExcluded(_ id: Int64, _ excluded: Bool) {
-        guard let f = tree.folders[id] else { return }
-        perform { try library.exclude(path: f.path, excluded) }
-    }
-
     func backUpNow(_ id: Int64) {
         perform { try library.scheduleNow(id: id) }
         backUpDueNow()
     }
 
-    func backUpAllNow() {
+    public func backUpAllNow() {
         perform {
             for f in tree.folders.values { try library.scheduleNow(id: f.id) }
         }

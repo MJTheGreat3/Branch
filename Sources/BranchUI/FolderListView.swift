@@ -45,6 +45,7 @@ struct FolderListView: View {
     private func menu(for f: ManagedFolder) -> some View {
         Button("Back Up Now") { model.backUpNow(f.id) }
         Button(f.isPaused ? "Resume" : "Pause") { model.setPaused(f.id, !f.isPaused) }
+        Button("Choose Items to Back Up…") { model.browsingID = f.id }
         Button("Show in Finder") {
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: f.path)])
         }

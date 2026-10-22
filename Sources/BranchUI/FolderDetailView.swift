@@ -7,12 +7,6 @@ struct FolderDetailView: View {
     let folder: ManagedFolder
     @State private var confirmingRemove = false
     @State private var patternsText = ""
-    @State private var choosingSubfolder: SubfolderAction?
-
-    enum SubfolderAction: Identifiable {
-        case override, exclude
-        var id: Self { self }
-    }
 
     private var policy: EffectivePolicy { model.tree.policy(for: folder.id) }
     private var root: ManagedFolder? { model.tree.root(of: folder.id) }
@@ -47,6 +41,60 @@ struct FolderDetailView: View {
                     LabeledContent("Files backed up") {
                         Text("\(t.uploadedCount) of \(t.count) · \(Format.bytes(t.uploadedBytes)) of \(Format.bytes(t.bytes))")
                     }
+                }
+            }
+
+            if !policy.isExcluded {
+                Section {
+                    let leftOut = model.tree.folders.values
+                        .filter { $0.isExcluded && $0.id != folder.id && FolderTree.relative($0.path, to: folder.path) != nil }
+                        .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+                    if leftOut.isEmpty {
+                        Label("Everything inside is backed up", systemImage: "checkmark.circle")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(leftOut) { item in
+                            HStack {
+                                Image(nsImage: NSWorkspace.shared.icon(forFile: item.path))
+                                    .resizable()
+                                    .frame(width: 16, height: 16)
+                                Text(FolderTree.relative(item.path, to: folder.path) ?? item.name)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text("left out").font(.caption).foregroundStyle(.secondary)
+                                Spacer()
+                                Button("Include") { model.setIncluded(item.path, true) }
+                                    .buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                    let custom = (model.tree.children[folder.id] ?? []).filter { !$0.isExcluded }
+                    ForEach(custom) { child in
+                        HStack {
+                            Image(systemName: "folder.badge.gearshape")
+                                .foregroundStyle(.secondary)
+                            Text(child.name)
+                            Text(model.tree.policy(for: child.id).interval.label)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Open") { model.selection = child.id }
+                                .buttonStyle(.borderless)
+                        }
+                    }
+                    HStack {
+                        Button {
+                            model.browsingID = folder.id
+                        } label: {
+                            Label("Choose Items to Back Up…", systemImage: "checklist")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Spacer()
+                    }
+                } header: {
+                    Text("Contents")
+                } footer: {
+                    Text("Tick or untick subfolders and files, or give a subfolder its own schedule.")
                 }
             }
 
@@ -93,7 +141,7 @@ struct FolderDetailView: View {
 
             if !policy.isExcluded {
                 Section {
-                    TextField("Extra patterns", text: $patternsText, prompt: Text("e.g. *.raw, cache, exports/*"))
+                    TextField("Extra patterns", text: $patternsText, prompt: Text(verbatim: "e.g. *.raw, cache, exports/*"))
                         .font(.body.monospaced())
                         .onSubmit { model.setExcludePatterns(folder.id, patternsText) }
                     if ExclusionRules.parse(patternsText) != folder.excludePatterns {
@@ -131,16 +179,6 @@ struct FolderDetailView: View {
                         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: folder.path)])
                     }
                     Spacer()
-                    Menu("Subfolder") {
-                        Button("Set Different Settings for a Subfolder…") { choosingSubfolder = .override }
-                        Button("Exclude a Subfolder…") { choosingSubfolder = .exclude }
-                    }
-                    .fixedSize()
-                    if !folder.isRoot {
-                        Button(folder.isExcluded ? "Include" : "Exclude") {
-                            model.setExcluded(folder.id, !folder.isExcluded)
-                        }
-                    }
                     Button("Stop Managing…", role: .destructive) { confirmingRemove = true }
                 }
             }
@@ -155,18 +193,6 @@ struct FolderDetailView: View {
             Button("Stop Managing", role: .destructive) { model.remove(folder.id) }
         } message: {
             Text("Branch will stop backing up this folder\(folder.isRoot ? " and its subfolder settings" : ""). Files on your Mac and copies already in OneDrive are not deleted.")
-        }
-        .fileImporter(
-            isPresented: Binding(get: { choosingSubfolder != nil }, set: { if !$0 { choosingSubfolder = nil } }),
-            allowedContentTypes: [.folder]
-        ) { result in
-            guard case .success(let url) = result else { return }
-            if choosingSubfolder == .exclude {
-                model.exclude(url)
-            } else {
-                model.addFolders([url])
-            }
-            choosingSubfolder = nil
         }
     }
 

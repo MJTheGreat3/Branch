@@ -29,7 +29,7 @@ struct DashboardView: View {
                     Text("\(model.totals.uploadedCount) of \(model.totals.count)").monospacedDigit()
                 }
                 LabeledContent("Waiting to upload") {
-                    Text("\(model.totals.count - model.totals.uploadedCount) files · \(Format.bytes(model.totals.bytes - model.totals.uploadedBytes))")
+                    Text("\(Format.count(model.totals.count - model.totals.uploadedCount, "file")) · \(Format.bytes(model.totals.bytes - model.totals.uploadedBytes))")
                         .monospacedDigit()
                 }
                 LabeledContent("Queued / uploading") {
@@ -69,7 +69,7 @@ struct DashboardView: View {
                             HStack {
                                 Text(f.name)
                                 Spacer()
-                                Text("Last \(Format.relative(f.lastSuccess)) · Next \(p.isPaused ? "paused" : Format.relative(f.nextRun, placeholder: "soon"))")
+                                Text("\(f.lastSuccess == nil ? "Not backed up yet" : "Last " + Format.relative(f.lastSuccess)) · Next \(p.isPaused ? "paused" : Format.relative(f.nextRun, placeholder: "soon"))")
                                     .foregroundStyle(.secondary)
                                 Image(systemName: (p.isPaused ? BackupStatus.paused : f.status).symbol)
                                     .foregroundStyle((p.isPaused ? BackupStatus.paused : f.status).tint)

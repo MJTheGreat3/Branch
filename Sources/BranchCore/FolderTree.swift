@@ -80,6 +80,43 @@ public struct FolderTree: Sendable {
         lineage(of: id).reversed().flatMap(\.excludePatterns)
     }
 
+    /// How a file or folder inside a managed root is treated, for the contents browser.
+    public enum Inclusion: Equatable, Sendable {
+        case included
+        /// Included, but something inside it is excluded.
+        case partial
+        case excluded
+        case skippedByPattern
+        case outside
+    }
+
+    /// Own inclusion state of `path`. Callers walking a hierarchy should treat children of
+    /// excluded or pattern-skipped items as excluded too, since the scanner never descends into them.
+    public func inclusion(of path: String, globalPatterns: [String]) -> Inclusion {
+        guard let owner = containing(path), let root = root(of: owner.id) else { return .outside }
+        if owner.path == path, owner.isExcluded { return .excluded }
+        if lineage(of: owner.id).contains(where: { $0.isExcluded }) { return .excluded }
+        let name = (path as NSString).lastPathComponent
+        let rel = FolderTree.relative(path, to: root.path)
+        if !rel.isNilOrEmpty {
+            let ownerForPatterns = owner.path == path ? owner.parentID ?? owner.id : owner.id
+            let rules = ExclusionRules(patterns: globalPatterns).adding(excludePatterns(for: ownerForPatterns))
+            if rules.excludes(name: name, relativePath: rel) { return .skippedByPattern }
+        }
+        let hasExcludedInside = folders.values.contains {
+            $0.isExcluded && $0.path != path && FolderTree.relative($0.path, to: path) != nil
+        }
+        return hasExcludedInside ? .partial : .included
+    }
+
+    /// Number of explicitly excluded items under (not including) `id`.
+    public func excludedCount(under id: Int64) -> Int {
+        guard let f = folders[id] else { return 0 }
+        return folders.values.filter {
+            $0.isExcluded && $0.id != id && FolderTree.relative($0.path, to: f.path) != nil
+        }.count
+    }
+
     /// Folders whose schedule is due at `now`.
     public func dueFolders(now: Date) -> [ManagedFolder] {
         folders.values
@@ -122,4 +159,8 @@ public struct FolderTree: Sendable {
             .filter { FolderTree.relative(path, to: $0.path) != nil }
             .max { $0.path.count < $1.path.count }
     }
+}
+
+private extension Optional where Wrapped == String {
+    var isNilOrEmpty: Bool { self?.isEmpty ?? true }
 }

@@ -41,7 +41,9 @@ public struct FolderLibrary: Sendable {
         }
         return try store.db.transaction {
             if let parent = tree.containing(path) {
-                return try store.insert(ManagedFolder(parentID: parent.id, path: path, bookmark: bookmark))
+                let node = try store.insert(ManagedFolder(parentID: parent.id, path: path, bookmark: bookmark))
+                try adoptDescendants(of: node, in: tree)
+                return node
             }
             let root = try store.insert(ManagedFolder(
                 path: path, bookmark: bookmark, remoteName: uniqueRemoteName(for: path, among: tree.roots)
@@ -153,7 +155,40 @@ public struct FolderLibrary: Sendable {
             return existing
         }
         guard let parent = tree.containing(path) else { throw LibraryError.outsideManagedRoots(path) }
-        return try store.insert(ManagedFolder(parentID: parent.id, path: path, isExcluded: excluded))
+        return try store.db.transaction {
+            let node = try store.insert(ManagedFolder(parentID: parent.id, path: path, isExcluded: excluded))
+            try adoptDescendants(of: node, in: tree)
+            return node
+        }
+    }
+
+    /// Includes or excludes a file or folder inside a managed root (the checkbox in the contents browser).
+    /// Including removes the exclusion node when it carries nothing else, keeping the tree tidy.
+    public func setIncluded(path rawPath: String, _ included: Bool) throws {
+        let path = URL(fileURLWithPath: rawPath).standardizedFileURL.path
+        guard included else {
+            try exclude(path: path)
+            return
+        }
+        let tree = try tree()
+        guard var node = tree.folders.values.first(where: { $0.path == path }), node.isExcluded else { return }
+        let plain = node.intervalOverride == nil && node.availabilityOverride == nil && !node.isPaused
+            && node.excludePatterns.isEmpty && (tree.children[node.id] ?? []).isEmpty && !node.isRoot
+        if plain {
+            try store.deleteFolder(id: node.id)
+        } else {
+            node.isExcluded = false
+            try store.update(node)
+        }
+    }
+
+    /// Re-parents managed nodes that sit under a newly inserted node, so inheritance flows through it.
+    private func adoptDescendants(of node: ManagedFolder, in tree: FolderTree) throws {
+        for var d in tree.folders.values where d.parentID == node.parentID && d.id != node.id
+            && FolderTree.relative(d.path, to: node.path) != nil {
+            d.parentID = node.id
+            try store.update(d)
+        }
     }
 
     /// Stops managing the folder and its descendants. Local files and cloud copies stay as they are.

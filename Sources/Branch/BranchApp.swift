@@ -7,27 +7,44 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Set by the app once its model exists; stand-ins opened before then wait here.
     var model: AppModel? {
-        didSet { pending.forEach(handle); pending = [] }
+        didSet {
+            let waiting = pending
+            pending = []
+            if !waiting.isEmpty { handle(waiting) }
+        }
     }
     private var pending: [URL] = []
 
-    /// Double-clicking a `.branch` stand-in in Finder restores the file and opens it.
+    /// Double-clicking a `.branch` stand-in, choosing Open With → Branch on a folder, or dropping
+    /// items on the Dock icon restores them in place.
     func application(_ application: NSApplication, open urls: [URL]) {
-        urls.forEach(handle)
+        handle(urls)
     }
 
-    private func handle(_ url: URL) {
+    private func handle(_ urls: [URL]) {
         guard let model else {
-            pending.append(url)
+            pending.append(contentsOf: urls)
             return
         }
-        model.restore(standIn: url, open: true)
+        model.restore(urls)
+    }
+
+    /// Finder's Services menu: "Restore from OneDrive (Branch)".
+    @objc func restoreFromCloud(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        let urls = pboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        guard !urls.isEmpty else {
+            error.pointee = "Select files or folders to restore." as NSString
+            return
+        }
+        handle(urls)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Needed when run as a bare SwiftPM executable rather than a bundle.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        NSApp.servicesProvider = self
+        NSUpdateDynamicServices()
     }
 
     /// Keep backing up from the menu bar after the window closes.

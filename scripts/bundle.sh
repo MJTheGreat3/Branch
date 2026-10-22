@@ -39,6 +39,27 @@ cat > "$APP/Contents/Info.plist" <<PLIST
             <key>LSHandlerRank</key><string>Owner</string>
             <key>LSItemContentTypes</key><array><string>${BUNDLE_ID}.stand-in</string></array>
         </dict>
+        <dict>
+            <!-- Open With → Branch on a folder restores everything in it from OneDrive. -->
+            <key>CFBundleTypeName</key><string>Folder</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key><array><string>public.folder</string></array>
+        </dict>
+    </array>
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key><dict><key>default</key><string>Restore from OneDrive (Branch)</string></dict>
+            <key>NSMessage</key><string>restoreFromCloud</string>
+            <key>NSPortName</key><string>Branch</string>
+            <key>NSRequiredContext</key><dict/>
+            <key>NSSendFileTypes</key>
+            <array>
+                <string>public.folder</string>
+                <string>${BUNDLE_ID}.stand-in</string>
+            </array>
+        </dict>
     </array>
     <key>UTExportedTypeDeclarations</key>
     <array>

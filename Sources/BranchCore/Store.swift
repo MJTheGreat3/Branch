@@ -92,6 +92,8 @@ public final class Store: @unchecked Sendable {
                 ALTER TABLE files ADD COLUMN offloaded_at REAL;
                 ALTER TABLE files ADD COLUMN restored_at REAL;
                 """)
+                // Cloud-only used to be a no-op label; now it removes local copies. Make users opt in again.
+                try db.execute("UPDATE folders SET availability = NULL WHERE availability = 'cloudOnly'")
                 try db.setUserVersion(4)
             }
         }

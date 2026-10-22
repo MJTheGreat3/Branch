@@ -114,6 +114,7 @@ final class StoreTests: XCTestCase {
                 UNIQUE (root_id, rel_path));
             CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
             INSERT INTO folders (path, remote_name) VALUES ('/tmp/old', 'old');
+            INSERT INTO folders (path, remote_name, availability) VALUES ('/tmp/co', 'co', 'cloudOnly');
             PRAGMA user_version = 1;
             """)
         }
@@ -121,5 +122,6 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(migrated.db.userVersion, 4)
         let f = try XCTUnwrap(migrated.folder(path: "/tmp/old"))
         XCTAssertEqual(f.excludePatterns, [])
+        XCTAssertNil(try migrated.folder(path: "/tmp/co")?.availabilityOverride, "old cloud-only must be re-confirmed")
     }
 }

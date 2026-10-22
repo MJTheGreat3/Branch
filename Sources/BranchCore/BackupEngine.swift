@@ -46,6 +46,17 @@ public actor BackupEngine {
         for f in try store.allFolders() where f.status == .uploading {
             try store.setStatus(folderID: f.id, .queued)
         }
+        let tree = FolderTree(try store.allFolders())
+        for root in tree.roots {
+            _ = try reconcileJobs(rootID: root.id, tree: tree)
+        }
+        // Only folders whose status depends on queued work; an idle, never-scanned folder stays idle.
+        for f in tree.folders.values where !f.isExcluded {
+            let counts = try store.jobCounts(folderID: f.id)
+            if counts.queued + counts.uploading + counts.failed > 0 || f.status == .queued {
+                try refreshFolderStatus(f.id)
+            }
+        }
     }
 
     /// One scheduling pass: scan every due folder, then drain the upload queue.

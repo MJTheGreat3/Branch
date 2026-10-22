@@ -277,6 +277,22 @@ final class BackupEngineTests: XCTestCase {
         XCTAssertEqual(try store.folder(id: big.id)?.status, .queued, "not falsely backed up")
     }
 
+    func testRecoverFixesStaleOwnershipWithoutFakingSuccess() async throws {
+        let docs = try library.add(path: path("Docs"))
+        try write("Docs/big/x.bin", Data("x".utf8))
+        try await engine.scan(folderID: docs.id)
+        var big = try library.add(path: path("Docs/big"))
+        big.status = .backedUp
+        try store.update(big)
+        let idle = try library.add(path: path("Photos"))
+
+        try await engine.recover()
+        XCTAssertEqual(try store.jobs().first?.folderID, big.id)
+        XCTAssertEqual(try store.folder(id: big.id)?.status, .queued)
+        XCTAssertEqual(try store.folder(id: idle.id)?.status, .idle)
+        XCTAssertNil(try store.folder(id: idle.id)?.lastSuccess)
+    }
+
     func testUntickingAfterQueueDropsJobs() async throws {
         let docs = try library.add(path: path("Docs"))
         try write("Docs/big/x.bin", Data("x".utf8))
